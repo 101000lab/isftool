@@ -1,4 +1,4 @@
-# isfbench 設計書
+# isftool 設計書
 
 ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (GLSL 4.00 → SPIR-V → Metal) で検査し, 描画し, GPU 時間を測る macOS 用の CLI.
 この文書だけを読んで別セッションが実装を始められることを目指す. 既に手元で確かめたことは「検証済み」, 確かめていない推測は「未検証」と書き分ける.
@@ -16,7 +16,7 @@ ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (G
 - 呼び出し元のリポジトリ `~/src/github.com/101000lab/vjcomponents` (以下 vjcomponents) は VDMX6 Plus 用の ISF シェーダー集. シェーダーの確認には WebGL のブラウザ preview を使っているが, VDMX とは別の経路なので次の 2 つが見えない.
   1. VDMX でだけ失敗するコンパイルエラー. 2026-11 に `layout` を変数名や入力名にしたシェーダー 2 本 (line_space, thin_barcode) が preview では通り, VDMX で `syntax error, unexpected LAYOUT` で失敗した. 以前には関数名 `vertex` が VDMX の Metal 変換で `expected unqualified-id` になった (vjcomponents の AGENTS.md に記録).
   2. シェーダーごとの GPU コスト. ライブで 16 レイヤー全てに ISF クリップを読み込むと出力が 9 fps 前後まで落ち, 見えている 1 枚 (line_space) だけにすると 120 fps だった. VDMX はクリップが入ったレイヤーを透明度 0 でも毎フレーム描く. どのシェーダーが重いかを VDMX を使わずに順位付けしたい.
-- 最終形は単独の CLI `isfbench`. vjcomponents 固有の決まり (Level 入力の命名, 録音ファイルの形式) はフラグで差し替えられる既定値として持ち, リポジトリから切り離しても使えるようにする.
+- 最終形は単独の CLI `isftool`. vjcomponents 固有の決まり (Level 入力の命名, 録音ファイルの形式) はフラグで差し替えられる既定値として持ち, リポジトリから切り離しても使えるようにする.
 - 想定する使い方は 2 つ.
   - 全シェーダーをまとめて検査, 計測して重い順に並べる.
   - 1 本のシェーダーを何度も計測しながらチューニングする (前回との差を見る).
@@ -52,11 +52,11 @@ VDMX6 がこれ (かその社内版) を使っていると判断した根拠.
 
 ソースから分かったこと.
 
-- **GLSL の組み立て**: `ISFDoc::generateShaderSource(&frag, &vert, VVISF::GLVersion_4, true)`. 最後の `true` は「入力を UBO (`VVISF_UNIFORMS`) にまとめる」. IMG 系の関数の書き換え, `IMG_THIS_PIXEL` 用に頂点シェーダーで座標を計算して渡す処理, `.vs` の扱い, uniform の並びとオフセットの計算は全てこの関数の中にある. よって isfbench はこのソースを組み込んで呼ぶ (8 章).
+- **GLSL の組み立て**: `ISFDoc::generateShaderSource(&frag, &vert, VVISF::GLVersion_4, true)`. 最後の `true` は「入力を UBO (`VVISF_UNIFORMS`) にまとめる」. IMG 系の関数の書き換え, `IMG_THIS_PIXEL` 用に頂点シェーダーで座標を計算して渡す処理, `.vs` の扱い, uniform の並びとオフセットの計算は全てこの関数の中にある. よって isftool はこのソースを組み込んで呼ぶ (8 章).
 - **glslang に渡す引数** (`GLSLangValidatorLib.cpp`): `-G --amb --aml --stdin -S frag` (頂点は `-S vert`). `--amb` は `--auto-map-bindings`, `--aml` は `--auto-map-locations`.
 - **SPIRV-Cross に渡す引数** (`SPIRVCrossLib.cpp`): `--rename-entry-point main <新しい名前> frag --msl -` (頂点は `vert`). MSL のバージョン指定も `--msl-decoration-binding` も無い. Metal の引数の番号は SPIRV-Cross が自動で振る.
 - **関数名**: `VV<ファイル名>VertFunc` と `VV<ファイル名>FragFunc`. ファイル名 (拡張子なし) の英数字以外は `_` に置き換える (`ISFMSLFuncSignature.mm` の `ISFMSLEntryPointNamesForPath`).
-- **解決できない uniform の検査**: シェーダー本体が自分で `uniform` を宣言すると, ホストが値を渡せない引数が MSL に残る. ISFMSLKit はこれを失敗として扱う (`ISFMSLFindUnboundArgs`). isfbench の check でも同じ検査をする.
+- **解決できない uniform の検査**: シェーダー本体が自分で `uniform` を宣言すると, ホストが値を渡せない引数が MSL に残る. ISFMSLKit はこれを失敗として扱う (`ISFMSLFindUnboundArgs`). isftool の check でも同じ検査をする.
 - **uniform の詰め方**: 先頭に `ISFShaderRenderInfo` (48 バイト. `PASSINDEX TIME RENDERSIZE[2] DATE[4] TIMEDELTA FRAMEINDEX PADDING_INFO[2]`), 画像ごとに `ISFShaderImgInfo` (32 バイト. `rect[4] size[2] flip PADDING_IMG`), 入力の値が続く. 各入力と各バッファのオフセットは `generateShaderSource` が `offsetInBuffer()` に書き込み, 全体の大きさを返す (`VVISF_Base.hpp`, `ISFAttr.hpp`, `ISFPassTarget.hpp`). ISFMSLKit はこの大きさを 48 の倍数に切り上げたバッファをパスごとに `newBufferWithBytes` で作り, 頂点とフラグメントの両方に渡す.
 - **`_X_flip`**: 普通のテクスチャで 1. コメントは「GLSL は左下原点で読むが Metal は左上原点なので, ここで反転する」(`ISFMSLScene.mm`). `rect` はテクスチャの中の使う範囲を正規化した値, `size` はその範囲のピクセル数.
 - **パスのテクスチャ**: 8 bit は `BGRA8`, `FLOAT` は RGBA の float (`VVMTLPool` の `bgra8TexSized` と `rgbaFloatTexSized`). パスの大きさが変わったら作り直す.
@@ -64,13 +64,13 @@ VDMX6 がこれ (かその社内版) を使っていると判断した根拠.
 - **サンプラー**: 正規化座標, 線形補間, 端はクランプ.
 - **頂点データ**: 解像度ごとに作った四角形のバッファを, 頂点関数が使う最大のバッファ番号 + 1 の番号に置く.
 
-手元の Homebrew 版で, 上の glslang と SPIRV-Cross の引数をそのまま使って line_space を変換し, Metal でコンパイルできた (検証済み). 関数名 `vertex` を持つ自作の小さなシェーダーは, それでも Homebrew の SPIRV-Cross が `vertex0` に改名して通った. 一方 VDMX では `vec2 vertex(float column, float row)` を持つ super_polygons が `expected unqualified-id` で落ちた (vjcomponents の `5d195dd` で修正). 理由は分かっていない. VIDVOX の SPIRV-Cross の版の違いかもしれないが, SPIRV-Cross は以前から MSL の予約語を改名しているので, 版の違いだけとは言い切れない. 本物の super_polygons (修正前) を M1 で isfbench に通して確かめる. どちらの結果でも, Metal の予約語は isfbench が自前で検査する (7.2).
+手元の Homebrew 版で, 上の glslang と SPIRV-Cross の引数をそのまま使って line_space を変換し, Metal でコンパイルできた (検証済み). 関数名 `vertex` を持つ自作の小さなシェーダーは, それでも Homebrew の SPIRV-Cross が `vertex0` に改名して通った. 一方 VDMX では `vec2 vertex(float column, float row)` を持つ super_polygons が `expected unqualified-id` で落ちた (vjcomponents の `5d195dd` で修正). 理由は分かっていない. VIDVOX の SPIRV-Cross の版の違いかもしれないが, SPIRV-Cross は以前から MSL の予約語を改名しているので, 版の違いだけとは言い切れない. 本物の super_polygons (修正前) を M1 で isftool に通して確かめる. どちらの結果でも, Metal の予約語は isftool が自前で検査する (7.2).
 
 ISFMSLKit の `extern/` には, VIDVOX がビルドした glslang と SPIRV-Cross の dylib (arm64 と x86_64, macOS 15 以上) が同梱されている. これを呼べば VDMX と同じ版で変換できるが, このセッションでは外部のビルド済みバイナリの実行が権限確認で止められたので試していない. 使うかどうかはユーザーの判断待ち (10 章).
 
 ## 3. VDMX が組み立てる GLSL (検証済みの写し)
 
-VDMX のエラー画面に出た, line_space.fs と thin_barcode.fs から VDMX が生成した GLSL をそのまま写す. isfbench は 2.5 の ISFGLSLGenerator を組み込むので, この形を自分で組み立てる必要は無い. この章は, 組み込んだ生成器の出力が VDMX と一致するかを確かめるための見本として使う (M1 の完了条件). 空白はエラー画面の表示で崩れているので整えた.
+VDMX のエラー画面に出た, line_space.fs と thin_barcode.fs から VDMX が生成した GLSL をそのまま写す. isftool は 2.5 の ISFGLSLGenerator を組み込むので, この形を自分で組み立てる必要は無い. この章は, 組み込んだ生成器の出力が VDMX と一致するかを確かめるための見本として使う (M1 の完了条件). 空白はエラー画面の表示で崩れているので整えた.
 
 ### 3.1 頂点シェーダー (シェーダーに .vs が無いとき)
 
@@ -158,7 +158,7 @@ vec4 VVSAMPLER_2DBYNORM(sampler2D inSampler, vec4 inSamplerImgRect, vec2 inSampl
 | `gl_FragCoord.x` | `isf_FragCoord.x` | VDMX の画面とソースの両方. ソースのコメントは「Metal に変換するので y 軸が反転するため」 |
 | `IMG_NORM_PIXEL` / `IMG_THIS_PIXEL` / `IMG_THIS_NORM_PIXEL` / `IMG_SIZE` | `ISFDoc.cpp` の `generateShaderSource` を参照 | ソース. `IMG_THIS_PIXEL` は頂点シェーダー側で座標を計算して渡す |
 
-- 書き換えは ISFGLSLGenerator がするので, isfbench は自前で書き換えない.
+- 書き換えは ISFGLSLGenerator がするので, isftool は自前で書き換えない.
 - `gl_FragCoord` は `isf_FragCoord` に置き換わるが, 値は `gl_FragCoord` と同じ画素の中心 (x + 0.5, y + 0.5) になる. `isf_FragCoord` は頂点シェーダーの出力で, 頂点 (四隅) では `isf_FragNormCoord * RENDERSIZE` がちょうど 0 か W / H なので `floor` は何もしない. その値が面の中で線形に補間され, 画素の中心で評価される. 半画素のずれは無いので, 描画側で補正しないこと.
 
 ### 3.4 uniform ブロックの並び (検証済み)
@@ -166,7 +166,7 @@ vec4 VVSAMPLER_2DBYNORM(sampler2D inSampler, vec4 inSamplerImgRect, vec2 inSampl
 1. 固定の 7 個: `int PASSINDEX; float TIME; vec2 RENDERSIZE; vec4 DATE; float TIMEDELTA; int FRAMEINDEX; vec2 PADDING_INFO;`
 2. 画像ごと: `vec4 _X_imgRect; vec2 _X_imgSize; bool _X_flip; int _X_padding;`
 3. INPUTS を定義順に. 型の対応は `float`→`float`, `long`→`int`, `bool`→`bool`, `event`→`bool`, `color`→`vec4`, `point2D`→`vec2`. `image` と `audio` と `audioFFT` は `uniform sampler2D` と 2 の 4 項目を持つ.
-- 正確な順序とオフセットは ISFGLSLGenerator の `_assembleShaderSource_VarDeclarations` が決める. isfbench はそれが書き込む `offsetInBuffer()` を使い, 自分で計算しない.
+- 正確な順序とオフセットは ISFGLSLGenerator の `_assembleShaderSource_VarDeclarations` が決める. isftool はそれが書き込む `offsetInBuffer()` を使い, 自分で計算しない.
 - `thin_barcode.fs` では入力の `long` が `int layout;` としてブロックに入っていた. 入力名がそのままメンバー名になるので, 予約語の入力名も glslang で検出できる.
 - サンプラーはブロックの外に `uniform sampler2D X;` として並ぶ.
 
@@ -193,17 +193,17 @@ spirv-cross frag.spv --reflect                          # JSON. 調べるとき�
 - 頂点の入力は `VERTEXDATA [[attribute(0)]]`.
 - 予約語の再現.
   - 変数名 `layout`: glslang で `syntax error, unexpected LAYOUT, expecting COMMA or SEMICOLON`. VDMX と同じ文言 (検証済み).
-  - 関数名 `vertex`: 自作の小さなシェーダーでは, Homebrew の spirv-cross が VIDVOX と同じ引数でも `vertex0` に改名して, Metal でも通ってしまった. VDMX で落ちた理由は未解明 (2.5). Metal の予約語は isfbench が自前で字句検査する (7.2).
+  - 関数名 `vertex`: 自作の小さなシェーダーでは, Homebrew の spirv-cross が VIDVOX と同じ引数でも `vertex0` に改名して, Metal でも通ってしまった. VDMX で落ちた理由は未解明 (2.5). Metal の予約語は isftool が自前で字句検査する (7.2).
 
 ## 5. CLI 仕様
 
 ```
-isfbench check  <shader.fs>... [--json]
-isfbench render <shader.fs> --out <dir|file.png> [--frames N] [--at SECONDS] [描画オプション]
-isfbench bench  <shader.fs>... [描画オプション] [計測オプション]
-isfbench info   <shader.fs> [--size WxH]                 # 短い要約
-isfbench dump   <shader.fs> <what> [--size WxH] [--set NAME=VALUE]...
-isfbench --version
+isftool check  <shader.fs>... [--json]
+isftool render <shader.fs> --out <dir|file.png> [--frames N] [--at SECONDS] [描画オプション]
+isftool bench  <shader.fs>... [描画オプション] [計測オプション]
+isftool info   <shader.fs> [--size WxH]                 # 短い要約
+isftool dump   <shader.fs> <what> [--size WxH] [--set NAME=VALUE]...
+isftool --version
 ```
 
 `info` は画面に収まる要約だけを出す. 生成物の全文は `dump` で 1 つずつ標準出力に出す (数百行になるシェーダーもあり, まとめて出すと要約が流れて見えなくなるため).
@@ -258,7 +258,7 @@ isfbench --version
 | `--frames N` | `240` | 計測するフレーム数 |
 | `--repeat N` | `1` | 計測を何回繰り返して中央値を取るか |
 | `--modes LIST` | `default,max`. `--recording` があれば `default,recording,max` | 6 章のモードをカンマ区切りで. 1 本ずつ全モードを測る |
-| `--results FILE` | `.isfbench/results.jsonl` | 結果を 1 行 1 計測で追記する |
+| `--results FILE` | `.isftool/results.jsonl` | 結果を 1 行 1 計測で追記する |
 | `--compare` | on | 同じシェーダー, 同じ条件の前回の結果との差 (%) を表に出す |
 | `--json` | off | 表の代わりに JSON を標準出力に出す |
 | `--sort KEY` | `median` | 表の並び順 |
@@ -284,7 +284,7 @@ GPU コストは入力の値で変わる. Level が 0 (無音または未割り�
 ### 7.1 ISF の読み込み
 
 - 読み込みは ISFGLSLGenerator の `VVISF::CreateISFDocRef(path, true)` に任せる (メタデータの JSON, INPUTS, PASSES, IMPORTED, 同名の `.vs`). 例外 (`VVISF::ISFErr`) は check の失敗 (`stage: parse`) として報告する.
-- 入力の一覧, パス, 画像は `ISFDoc` の `inputs()`, `renderPasses()`, `imageImports()` から取る. Level 入力の判定など isfbench 独自の処理はその上に載せる.
+- 入力の一覧, パス, 画像は `ISFDoc` の `inputs()`, `renderPasses()`, `imageImports()` から取る. Level 入力の判定など isftool 独自の処理はその上に載せる.
 - `.vs` の扱いも ISFGLSLGenerator に任せる (`hasCustomVertShader()`).
 - `WIDTH` / `HEIGHT` は ISF の式. ISFGLSLGenerator の `ISFPassTarget::evalTargetSize(width, height, symbols)` が exprtk で評価する (入力名を変数として渡す). 自前の評価器は書かない. vjcomponents で実際に使われている形 (2026-11-04 に grep で確認, rejected を含む).
   - 数値: `"1"`, `"4"`, `"48"`, `"512"`, `"1100"` など
@@ -314,7 +314,7 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 - uniform: ISFGLSLGenerator が返す大きさを 48 の倍数に切り上げたバイト列を作る. 先頭 48 バイトが `ISFShaderRenderInfo`, 画像ごとの `ISFShaderImgInfo` と入力の値は `offsetInBuffer()` の位置に書く. パスごとに `PASSINDEX` と `RENDERSIZE` を書き換え, 新しい `MTLBuffer` にコピーして頂点とフラグメントの両方に渡す. 1 つの `MTLBuffer` を使い回すと, GPU が実行する時点の値 (後のパスの `PASSINDEX` など) を読んでしまう. 4 KB 未満なら `setVertexBytes` / `setFragmentBytes` でもよい.
 - `ISFShaderImgInfo`: `rect` はテクスチャの中の使う範囲 (普通は 0,0,1,1), `size` はそのピクセル数, `flip` は普通のテクスチャで 1 (2.5).
 - パスのテクスチャ: 8 bit は `bgra8Unorm`, `FLOAT` は RGBA の float (ISFMSLKit の `VVMTLPool rgbaFloatTexSized` の形式を確かめて合わせる. 32F の見込み). vjcomponents には 8 bit 前提の値の詰め方をしているシェーダーがある.
-- 持続バッファの初期内容 (未検証). ISFGLSLGenerator の `ISFPassTarget.hpp` のコメントには「作ったときに黒で埋める必要がある」とあるが, ISFMSLKit はテクスチャを VVMetalKit の `VVMTLPool` から取り, ロードアクションも `dontCare` で, VVMetalKit のソースにテクスチャを消す処理は見当たらなかった. つまり VDMX でも 1 フレーム目の持続バッファの中身は不定かもしれない. isfbench は結果を毎回同じにするため黒 (0,0,0,0) で埋める. 計測には影響しないが, render の PNG を VDMX と比べるとき (M3) は最初の数フレームが違いうることに注意する.
+- 持続バッファの初期内容 (未検証). ISFGLSLGenerator の `ISFPassTarget.hpp` のコメントには「作ったときに黒で埋める必要がある」とあるが, ISFMSLKit はテクスチャを VVMetalKit の `VVMTLPool` から取り, ロードアクションも `dontCare` で, VVMetalKit のソースにテクスチャを消す処理は見当たらなかった. つまり VDMX でも 1 フレーム目の持続バッファの中身は不定かもしれない. isftool は結果を毎回同じにするため黒 (0,0,0,0) で埋める. 計測には影響しないが, render の PNG を VDMX と比べるとき (M3) は最初の数フレームが違いうることに注意する.
 - 読み書きの入れ替えは ISFMSLKit のやり方に合わせる.
 - ロードアクションはカスタムの頂点シェーダーがあるときだけクリア, それ以外は `dontCare` (ISFMSLKit と同じ). 持続でないバッファの初期内容は保証されないので, それに頼るシェーダーは VDMX でも不定になる.
 - サンプラー: 正規化座標, 線形補間, 端はクランプ.
@@ -340,7 +340,7 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 ### 7.5 出力
 
 - 標準出力の表 (bench). 列: shader, mode, median ms, p95 ms, passes, 前回比 %, 注記 (audio 入力, 失敗理由など). 既定は median の降順.
-- 結果ファイル `.isfbench/results.jsonl` に 1 計測 1 行で追記する.
+- 結果ファイル `.isftool/results.jsonl` に 1 計測 1 行で追記する.
 
 ```json
 {"at":"2026-11-04T05:00:00Z","shader":"isfs/lines/random_line.fs","sha256":"<.fs の内容のハッシュ>",
@@ -348,7 +348,7 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
  "warmup":60,"frames":240,"repeat":1,
  "ms":{"median":3.21,"p95":3.40,"min":3.10,"mean":3.22,"stddev":0.05},
  "compile_ms":{"glsl":12.0,"spirv_cross":8.0,"metal":40.0},
- "device":"Apple M4 Pro","isfbench":"0.1.0"}
+ "device":"Apple M4 Pro","isftool":"0.1.0"}
 ```
 
 - 前回比は, 同じ shader パス, size, mode, frames の直近の行と比べる. `sha256` が違えばシェーダーが変わったことが分かる.
@@ -357,12 +357,12 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 ## 8. 構成 (SwiftPM)
 
 ```
-isfbench/
+isftool/
 ├─ Package.swift                 # swift-tools-version 6.0, macOS 14 以上, 依存は swift-argument-parser だけ
 ├─ Vendor/
 │  └─ ISFGLSLGenerator/          # git submodule. github.com/mrRay/ISFGLSLGenerator を 2b5507b に固定 (BSD 3-Clause)
 ├─ Sources/
-│  ├─ isfbench/                  # 実行ファイル. 引数の解釈と表の出力だけ
+│  ├─ isftool/                  # 実行ファイル. 引数の解釈と表の出力だけ
 │  ├─ CISFGLSLGenerator/         # C++ ターゲット. Vendor の libISFGLSLGenerator/src と include をビルドする
 │  ├─ ISFGLSLBridge/             # C++ ターゲット. 下の C 関数を extern "C" で公開する薄い層
 │  └─ ISFKit/                    # Swift ライブラリ. 他から再利用できるように分ける
@@ -381,7 +381,7 @@ isfbench/
 └─ design.md                     # この文書
 ```
 
-- ビルドは `swift build -c release`. 実行ファイルは `.build/release/isfbench`.
+- ビルドは `swift build -c release`. 実行ファイルは `.build/release/isftool`.
 - ISFGLSLGenerator は C++ (C++17 以上, exprtk と nlohmann json をヘッダーで含む). Swift から直接 C++ を呼ぶ (C++ 相互運用) より, `ISFGLSLBridge` で必要な操作だけを C の関数にして呼ぶほうが壊れにくい. 例: 文書を開く / 閉じる, GLSL を作る (頂点とフラグメントの文字列, UBO の大きさ), 入力とパスと画像の一覧と各オフセット, パスの大きさの評価, エラー文字列. exprtk はコンパイルが重いので, リリースビルドの時間に注意する.
 - ISFGLSLGenerator のビルドに使うコンパイルフラグは, ISFMSLKit の `ISFGLSLGenerator_build_script.sh` と ISFGLSLGenerator の `CMakeLists.txt` を参考にする.
 - SwiftPM のターゲットは submodule をそのまま指せる. 例:
@@ -401,14 +401,14 @@ isfbench/
 - `swift-tools-version 6.0` だと Swift 6 の厳密な並行性検査が有効になり, Metal のオブジェクトが `Sendable` でないことで大量の診断が出る. 各ターゲットに `swiftLanguageModes: [.v5]` を付ける.
 - swift-argument-parser を使う (サブコマンドとヘルプの手間を省くため). 取得にネットワークが要る.
 - 外部コマンドの呼び出しは `Process`. 中間ファイルは一時ディレクトリに置き, `--keep-intermediates` のときだけ残す.
-- シェーダーごとの変換結果 (MSL) は `.fs` の内容のハッシュで `~/Library/Caches/isfbench/` に保存し, 同じ内容なら再変換しない (チューニングで何度も測るため).
+- シェーダーごとの変換結果 (MSL) は `.fs` の内容のハッシュで `~/Library/Caches/isftool/` に保存し, 同じ内容なら再変換しない (チューニングで何度も測るため).
 
 ## 9. マイルストーンと完了条件
 
 各段階は前の段階が完了条件を満たしてから進める.
 
 ### M0: 骨組み
-- Package.swift, `isfbench --version`, `isfbench check --help` が動く.
+- Package.swift, `isftool --version`, `isftool check --help` が動く.
 - ISFGLSLGenerator を submodule で入れ, `CISFGLSLGenerator` と `ISFGLSLBridge` がビルドできる.
 
 ### M1: check
@@ -419,7 +419,7 @@ isfbench/
   2. line_space の修正前の版が `stage: glsl` で失敗し, メッセージに `unexpected LAYOUT` を含む. 取り出し方: vjcomponents で `git show d7b859b~1:isfs/lines/line_space.fs`.
   3. thin_barcode の修正前の版が同じく失敗する (`git show 2798e10~1:isfs/lines/thin_barcode.fs`). 入力名が原因の例.
   4. super_polygons の修正前の版 (`git show 5d195dd~1:isfs/depth/super_polygons.fs`. 関数 `vec2 vertex(float column, float row)` を持つ) が `stage: lint` で失敗する. あわせて, 字句検査を外したときに spirv-cross と Metal の段で通るか落ちるかを記録し, 2.5 の未解明の点に結果を書き足す.
-  5. vjcomponents の `isfs/` 以下 (rejected を除く) 全部を check して, 失敗の一覧を出す. VDMX で普通に読み込めているシェーダーが失敗したら, isfbench 側の呼び出し方 (引数, 組み込み方) をまず疑う.
+  5. vjcomponents の `isfs/` 以下 (rejected を除く) 全部を check して, 失敗の一覧を出す. VDMX で普通に読み込めているシェーダーが失敗したら, isftool 側の呼び出し方 (引数, 組み込み方) をまず疑う.
   6. エラーの行番号が元の .fs の行と一致する.
   7. `--reflect` で得た `VVISF_UNIFORMS` のオフセットが, ISFGLSLGenerator の `offsetInBuffer()` と一致する (数本で確かめてテストに残す).
 
@@ -443,15 +443,15 @@ isfbench/
 
 ### M5: 仕上げ
 - README (インストール, 例, 数字の読み方と限界).
-- vjcomponents の Use 済みシェーダーを全部測る例. Use 済みの一覧は vjcomponents の preview サーバーの `GET /__feedback` か `isfs/feedback.jsonl` (ファイル名ごとに最後の `use` / `unuse` / `reject` が効く) から作れる. isfbench 本体はこの規則を知らなくてよい (`--from` で一覧を渡す).
+- vjcomponents の Use 済みシェーダーを全部測る例. Use 済みの一覧は vjcomponents の preview サーバーの `GET /__feedback` か `isfs/feedback.jsonl` (ファイル名ごとに最後の `use` / `unuse` / `reject` が効く) から作れる. isftool 本体はこの規則を知らなくてよい (`--from` で一覧を渡す).
 
 ## 10. 未決事項とリスク
 
-- **glslang と SPIRV-Cross の版の違い**. isfbench は Homebrew の版を使うが, VDMX は VIDVOX が改造した古い版を使う. `vertex` のように結果が変わる例がある (2.5). 対策の候補は 3 つで, ユーザーの判断待ち.
+- **glslang と SPIRV-Cross の版の違い**. isftool は Homebrew の版を使うが, VDMX は VIDVOX が改造した古い版を使う. `vertex` のように結果が変わる例がある (2.5). 対策の候補は 3 つで, ユーザーの判断待ち.
   1. Homebrew の版を使い, 違いは字句検査で補う (今の方針で, M0 はこれで始める. 2 と 3 は後から差し替えられ, 構成は変わらない).
   2. VIDVOX の改造版 (`mrRay/glslang` の `GLSLangValidatorLib` ブランチ, `mrRay/SPIRV-Cross` の `SPIRVCrossLib` ブランチ) をソースからビルドして使う. VDMX に最も近いが, ビルドが重い.
   3. ISFMSLKit の `extern/` に同梱されたビルド済みの dylib を呼ぶ. 手軽だが, 外部のビルド済みバイナリを実行することになる. ISFMSLKit のライセンスは GitHub 上で判定されていない (NOASSERTION) ので, 配布するなら確認が要る.
-- VDMX6 が使っているのが公開版の ISFMSLKit そのものかは分からない (社内で手を入れている可能性がある). VDMX で落ちて isfbench で通るシェーダーが見つかったら, エラー画面の GLSL を 3 章に追記し, check のテストに足す.
+- VDMX6 が使っているのが公開版の ISFMSLKit そのものかは分からない (社内で手を入れている可能性がある). VDMX で落ちて isftool で通るシェーダーが見つかったら, エラー画面の GLSL を 3 章に追記し, check のテストに足す.
 - `audio` / `audioFFT` 入力のテクスチャの形 (幅, 高さ, 形式) は ISFMSLKit のソースで確かめる.
 - GPU 時間は VDMX の出力 fps と一致しない (VDMX は合成, レイヤー FX, Syphon 出力も描く). 順位付けと前後比較に使う.
 - Apple GPU はタイルベースなので, パスの多いシェーダーはパスごとのロードとストアのコストも乗る. これは VDMX でも同じなので, そのまま測る.
