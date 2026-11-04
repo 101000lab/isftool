@@ -7,7 +7,7 @@ ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (G
 
 - M0 は完了. M1 は check, info, dump (`uniforms` を除く) を実装し, 完了条件 0 から 7 をテストか手元の実行で確かめた (9 章の M1 に結果を書いた). 未実装は `dump uniforms` と `~/Library/Caches/isftool/` の変換結果キャッシュ.
 - テストは `swift test`. Command Line Tools には XCTest が無いので swift-testing (`import Testing`) で書いた. ISFGLSLGenerator と Homebrew の glslang / spirv-cross と Metal を実際に通す統合テスト (`Tests/ISFKitTests/IntegrationTests.swift`) は, ツールが見つからなければ無効になる.
-- 次は M2.
+- M2 は `render` で 1 パスのシェーダーを PNG にするところまで実装した (9 章の M2 に結果を書いた). 完了条件の preview との見比べも済んだ. 次は M3. `render` のオプションは `--out` (PNG ファイル), `--size`, `--at`, `--fps`, `--set`, `--no-lint` だけで, `--frames`, `--levels`, `--recording`, `--images` は M3 と M4 で足す.
 - このマシンには Homebrew で glslang と spirv-cross を入れた (2.).
 - 4 章の変換経路は一時ディレクトリで試しただけで, ファイルは残していない.
 - VDMX が使っているとみられる VIDVOX の公開実装を見つけ, ソースを読んだ (2.5). GLSL の組み立ては自前で書かず, その実装 (ISFGLSLGenerator) を組み込む方針に変えた. 3 章の写しは, その実装と VDMX が一致することの証拠として残している.
@@ -330,6 +330,11 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
   - テクスチャの向き: `flip = 1` で正しく読めるはず (2.5). 次の検査用シェーダーで確かめる.
   - バッファ: 1 フレーム目に上半分だけ白を書き, 2 フレーム目以降は自分のバッファを `IMG_THIS_PIXEL` で読んで写すシェーダー. 出力の上半分が白なら正しい.
   - 画像: 上半分が白の PNG を IMPORTED で読んで表示するシェーダー.
+- 実装して分かったこと (検証済み, M2).
+  - 向き. 3.1 の射影と ISFMSLScene の頂点の並び `(0,0) (0,H) (W,0) (W,H)` をそのまま使うと, 正規化座標の y = 1 が PNG の一番上の行, x = 1 が一番右の列になった. どこにも反転は要らない. `Tests/ISFKitTests/Fixtures/orientation.fs` と統合テスト `testRenderFacesTheSameWayAsISF` に残した.
+  - 頂点の記述子. ISFMSLKit は `layouts[1]` に stride を書くが, 頂点データの番号は「頂点関数の最大のバッファ番号 + 1」なので, 番号が 1 でないシェーダーでは合わない. isftool は同じ番号の `layouts` に書く. vjcomponents の全シェーダーで番号は 1 なので結果は変わらない.
+  - `DATE` は ISFMSLScene と同じくフレームごとに手元の時計から入れる. vjcomponents で `DATE` を使うシェーダーは無いので, PNG の再現性には影響しない.
+  - 入力の値は ISFGLSLGenerator の `currentVal()` (読み込んだ直後は DEFAULT) から始め, `event` は false, 最後に `--set` を当てる (6 章).
 - 出力は `--size` のテクスチャ. render は PNG に書き出す (straight alpha. ISF の出力は RGB が 0 のところ alpha 0 という前提).
 
 ### 7.4 計測
@@ -441,6 +446,10 @@ isftool/
 ### M2: 1 パスの描画
 - 1 パスのシェーダーを `render` で PNG にする.
 - 完了条件: vjcomponents の `isfs/geometry/spiral_gratings.fs` などパスの無いシェーダーを 1 枚出し, preview で同じ時刻を見たものと形が同じ (上下左右の向きを含む). 半画素の差は許す.
+- 結果 (2026-11-04).
+  - preview には時刻を止めたり指定したりする方法が無い. spiral_gratings は時刻を `TIME * Speed` でしか使わないので, `--set Speed=0` で時刻に依らない絵にして比べる. preview (1280x720, Speed 0) の画面と `render --size 1280x720 --set Speed=0` の PNG を並べ, 2 つの渦の中心の位置 (幅と高さに対する割合で, 上の中心が約 (0.55, 0.375), 下の中心が約 (0.46, 0.61), 左上が原点) と巻く向きが一致した. 上下左右とも反転していない (検証済み). 比べたのは目で見た形で, 画素ごとの差は取っていない.
+  - rejected を除く 162 本を `--at 5` で描くと, 139 本が PNG になった. 残りは TARGET のあるパスを持つ 18 本と, 画像か音声の入力を持つ 4 本 (どちらも M3 まで描かずに理由を出して終わる), それと Metal で落ちる nested_frames_3d.
+  - 描けた 139 本のうち strobe 系の 23 本は全面が透明だった. Level 入力が DEFAULT の 0 だと何も描かないシェーダーで, strobe_lamps は `--set Level1=1` から `Level8=1` で描けた. 6 章の `max` モードが要る理由そのもの.
 
 ### M3: 複数パス, 持続バッファ, 画像
 - 7.3 の向きの検査用シェーダー 2 本で `_X_flip` の扱いを決め, テストに残す.
