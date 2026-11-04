@@ -108,6 +108,37 @@ final class IntegrationTests {
         #expect(passes.map { "\($0.target) \($0.width)x\($0.height) \($0.persistent)" } == ["lineState 4x1 true", " 1920x1440 false"])
     }
 
+    func render(_ name: String, size: RenderSize = RenderSize(width: 64, height: 48), set: [String] = []) throws -> RenderedImage {
+        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: size), toolchain: toolchain, metal: nil, options: CheckOptions(metal: false))
+        let result = checker.check(path: fixture(name), workDirectory: workDirectory.appendingPathComponent(UUID().uuidString))
+        try #require(result.report.ok, Comment(rawValue: CheckFormatter.format(result)))
+        let document = try #require(result.artifacts.document)
+        var values = InputValues(document: document)
+        for s in set { try values.set(s, document: document) }
+        return try Renderer(artifacts: result.artifacts).render(frame: FrameInfo(renderSize: size), values: values.values)
+    }
+
+    /// Design 7.3: normalized y = 1 must be the top row of the PNG and x = 1 the right column, with no flip anywhere.
+    @Test func testRenderFacesTheSameWayAsISF() throws {
+        let image = try render("orientation.fs")
+        #expect(image.width == 64 && image.height == 48)
+        #expect(image.pixel(x: 0, y: 0) == (0, 255, 0, 255), "top left is green")
+        #expect(image.pixel(x: 63, y: 0) == (255, 255, 0, 255), "top right is yellow")
+        #expect(image.pixel(x: 0, y: 47) == (0, 0, 0, 255), "bottom left is black")
+        #expect(image.pixel(x: 63, y: 47) == (255, 0, 0, 255), "bottom right is red")
+    }
+
+    @Test func testRenderAppliesInputValues() throws {
+        let image = try render("orientation.fs", set: ["Tint=0,0,1,1"])
+        #expect(image.pixel(x: 0, y: 47) == (0, 0, 255, 255))
+    }
+
+    @Test func testRenderRejectsNamedPassesForNow() throws {
+        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: RenderSize(width: 64, height: 48)), toolchain: toolchain, metal: nil, options: CheckOptions(metal: false))
+        let result = checker.check(path: fixture("line_space.fs"), workDirectory: workDirectory.appendingPathComponent(UUID().uuidString))
+        #expect(throws: RenderError.self) { try Renderer(artifacts: result.artifacts) }
+    }
+
     @Test func testBridgeReportsParseErrors() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("broken-\(UUID().uuidString).fs").path
         try "/*{ \"INPUTS\": [ }*/\nvoid main() {}\n".write(toFile: path, atomically: true, encoding: .utf8)

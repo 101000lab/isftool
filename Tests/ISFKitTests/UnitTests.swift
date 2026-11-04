@@ -306,6 +306,113 @@ import Testing
     }
 }
 
+@Suite struct UniformPackerTests {
+    // Offsets as ISFDoc reports them for spiral_gratings.fs, cut down to three inputs.
+    let doc = ISFDocumentInfo(
+        maxUBOSize: 88,
+        inputs: [
+            ISFInput(name: "Speed", type: "Float", current: .number(0.4), offset: 0),
+            ISFInput(name: "Type", type: "Long", current: .number(1), offset: 8),
+            ISFInput(name: "Opacity", type: "Float", current: .number(1), offset: 36),
+        ]
+    )
+
+    func read<T>(_ data: Data, _ offset: Int, as: T.Type) -> T {
+        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: T.self) }
+    }
+
+    @Test func testWritesRenderInfoAndInputsAtISFMSLSceneOffsets() {
+        let frame = FrameInfo(passIndex: 2, time: 5, timeDelta: 1.0 / 60, frameIndex: 300, renderSize: RenderSize(width: 1920, height: 1440), date: SIMD4(2026, 11, 4, 3600))
+        let data = UniformPacker.pack(document: doc, values: InputValues(document: doc).values, frame: frame)
+        #expect(data.count == 96)
+        #expect(read(data, 0, as: Int32.self) == 2)
+        #expect(read(data, 4, as: Float.self) == 5)
+        #expect(read(data, 8, as: Float.self) == 1920)
+        #expect(read(data, 12, as: Float.self) == 1440)
+        #expect(read(data, 16, as: Float.self) == 2026)
+        #expect(read(data, 28, as: Float.self) == 3600)
+        #expect(read(data, 32, as: Float.self) == Float(1.0 / 60))
+        #expect(read(data, 36, as: Int32.self) == 300)
+        #expect(read(data, 48, as: Float.self) == Float(0.4))
+        #expect(read(data, 56, as: Int32.self) == 1)
+        #expect(read(data, 84, as: Float.self) == 1)
+    }
+
+    @Test func testPacksVectorsAndBools() {
+        let doc = ISFDocumentInfo(maxUBOSize: 80, inputs: [
+            ISFInput(name: "On", type: "Bool", current: .bool(true), offset: 0),
+            ISFInput(name: "Center", type: "Point2D", current: .vector([0.25, 0.75]), offset: 8),
+            ISFInput(name: "Tint", type: "Color", current: .vector([0.1, 0.2, 0.3, 0.4]), offset: 16),
+        ])
+        let data = UniformPacker.pack(document: doc, values: InputValues(document: doc).values, frame: FrameInfo(renderSize: RenderSize(width: 1, height: 1)))
+        #expect(read(data, 48, as: UInt32.self) == 1)
+        #expect(read(data, 56, as: Float.self) == 0.25)
+        #expect(read(data, 60, as: Float.self) == 0.75)
+        #expect(read(data, 64 + 12, as: Float.self) == Float(0.4))
+    }
+
+    @Test func testClockFollowsFps() {
+        let f = FrameInfo.at(frame: 150, fps: 30, renderSize: RenderSize(width: 2, height: 2))
+        #expect(f.time == 5)
+        #expect(f.frameIndex == 150)
+        #expect(f.timeDelta == Float(1.0 / 30))
+    }
+}
+
+@Suite struct InputValuesTests {
+    let doc = ISFDocumentInfo(inputs: [
+        ISFInput(name: "Speed", type: "Float", default: .number(0.4), current: .number(0.4)),
+        ISFInput(name: "Clear", type: "Event"),
+        ISFInput(name: "Tint", type: "Color", current: .vector([0, 0, 0, 1])),
+        ISFInput(name: "Center", type: "Point2D"),
+        ISFInput(name: "inputImage", type: "Image"),
+    ])
+
+    @Test func testStartsFromCurrentValuesWithEventsOff() {
+        let v = InputValues(document: doc)
+        #expect(v.values["Speed"] == .number(0.4))
+        #expect(v.values["Clear"] == .bool(false))
+        #expect(v.values["inputImage"] == nil)
+    }
+
+    @Test func testSetParsesByType() throws {
+        var v = InputValues(document: doc)
+        try v.set("Speed=-2", document: doc)
+        try v.set("Clear=1", document: doc)
+        try v.set("Tint=1,0.5,0,1", document: doc)
+        try v.set("Center=0.1, 0.9", document: doc)
+        #expect(v.values["Speed"] == .number(-2))
+        #expect(v.values["Clear"] == .bool(true))
+        #expect(v.values["Tint"] == .vector([1, 0.5, 0, 1]))
+        #expect(v.values["Center"] == .vector([0.1, 0.9]))
+    }
+
+    @Test func testSetRejectsBadInput() {
+        var v = InputValues(document: doc)
+        #expect(throws: InputValueError.self) { try v.set("Speed", document: doc) }
+        #expect(throws: InputValueError.self) { try v.set("Nope=1", document: doc) }
+        #expect(throws: InputValueError.self) { try v.set("Tint=1,0", document: doc) }
+        #expect(throws: InputValueError.self) { try v.set("inputImage=1", document: doc) }
+    }
+}
+
+@Suite struct RenderOutputTests {
+    @Test func testQuadMatchesISFMSLScene() {
+        #expect(Quad.vertices(width: 4, height: 3) == [SIMD4(0, 0, 0, 1), SIMD4(0, 3, 0, 1), SIMD4(4, 0, 0, 1), SIMD4(4, 3, 0, 1)])
+    }
+
+    @Test func testPNGKeepsStraightAlphaAndRowOrder() throws {
+        // Top row: half transparent red. Bottom row: opaque blue. BGRA order.
+        let image = RenderedImage(width: 1, height: 2, bgra: Data([0, 0, 255, 128, 255, 0, 0, 255]))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("isftool-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try PNGWriter.write(image, to: url)
+        let back = try #require(PNGReader.read(url))
+        #expect(back.pixel(x: 0, y: 0) == (255, 0, 0, 128))
+        #expect(back.pixel(x: 0, y: 1) == (0, 0, 255, 255))
+    }
+}
+
 @Suite struct LevelMatcherTests {
     @Test func testDefaultPattern() throws {
         let m = try LevelMatcher()

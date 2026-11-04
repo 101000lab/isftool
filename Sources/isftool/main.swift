@@ -9,7 +9,7 @@ struct IsfTool: ParsableCommand {
         commandName: "isftool",
         abstract: "Check, render and benchmark ISF shaders through the same GLSL to SPIR-V to Metal path as VDMX.",
         version: isftoolVersion,
-        subcommands: [Check.self, Info.self, Dump.self]
+        subcommands: [Check.self, Render.self, Info.self, Dump.self]
     )
 }
 
@@ -102,6 +102,68 @@ struct Check: ParsableCommand {
             print("\n\(paths.count - failed) ok, \(failed) failed")
         }
         if reports.contains(where: { !$0.ok }) {
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct Render: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Render one frame of a shader to PNG.")
+
+    @Argument(help: "ISF fragment shader (.fs).")
+    var shader: String
+
+    @Option(help: "Output PNG file.")
+    var out: String
+
+    @Option(help: "Output size.")
+    var size = "1920x1440"
+
+    @Option(help: "Time of the frame in seconds.")
+    var at: Double = 0
+
+    @Option(help: "Clock rate. TIME = i / fps, TIMEDELTA = 1 / fps, FRAMEINDEX = i.")
+    var fps: Double = 60
+
+    @Option(name: .customLong("set"), help: "Fix an input to a value, as NAME=VALUE. Color is r,g,b,a and Point2D is x,y. Repeatable.")
+    var assignments: [String] = []
+
+    @Flag(name: .customLong("no-lint"), help: "Skip the Metal keyword check.")
+    var noLint = false
+
+    @OptionGroup var tools: ToolOptions
+
+    func validate() throws {
+        guard fps > 0 else { throw ValidationError("--fps must be positive") }
+        guard at >= 0 else { throw ValidationError("--at must not be negative") }
+    }
+
+    func run() throws {
+        let renderSize = try parseSize(size)
+        // The renderer compiles the MSL itself, so check stops before Metal to avoid compiling twice.
+        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: renderSize), toolchain: try tools.toolchain(), metal: nil, options: CheckOptions(lint: !noLint, metal: false))
+        let result = tools.withWorkDirectory(for: shader) { checker.check(path: shader, workDirectory: $0) }
+        guard result.report.ok, let document = result.artifacts.document else {
+            print(CheckFormatter.format(result))
+            throw ExitCode.failure
+        }
+        var values = InputValues(document: document)
+        for assignment in assignments {
+            do {
+                try values.set(assignment, document: document)
+            } catch {
+                throw ValidationError("\(error)")
+            }
+        }
+        let frameIndex = Int((at * fps).rounded())
+        let frame = FrameInfo.at(frame: frameIndex, fps: fps, renderSize: renderSize, date: FrameInfo.localDate())
+        do {
+            let renderer = try Renderer(artifacts: result.artifacts)
+            let image = try renderer.render(frame: frame, values: values.values)
+            try PNGWriter.write(image, to: URL(fileURLWithPath: out))
+            print("wrote \(out)  (\(image.width)x\(image.height), TIME \(frame.time), FRAMEINDEX \(frame.frameIndex))")
+        } catch {
+            FileHandle.standardError.write(Data("render failed: \(error)\n".utf8))
             throw ExitCode.failure
         }
     }

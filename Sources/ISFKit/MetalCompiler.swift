@@ -20,8 +20,12 @@ public final class MetalLibraryCompiler: MSLCompiling {
     }
 
     public func compile(_ source: String) throws {
+        _ = try makeLibrary(source)
+    }
+
+    public func makeLibrary(_ source: String) throws -> MTLLibrary {
         do {
-            _ = try device.makeLibrary(source: source, options: nil)
+            return try device.makeLibrary(source: source, options: nil)
         } catch {
             throw MetalCompileError(message: (error as NSError).localizedDescription)
         }
