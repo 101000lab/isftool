@@ -7,7 +7,8 @@ ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (G
 
 - M0 は完了. M1 は check, info, dump (`uniforms` を除く) を実装し, 完了条件 0 から 7 をテストか手元の実行で確かめた (9 章の M1 に結果を書いた). 未実装は `dump uniforms` と `~/Library/Caches/isftool/` の変換結果キャッシュ.
 - テストは `swift test`. Command Line Tools には XCTest が無いので swift-testing (`import Testing`) で書いた. ISFGLSLGenerator と Homebrew の glslang / spirv-cross と Metal を実際に通す統合テスト (`Tests/ISFKitTests/IntegrationTests.swift`) は, ツールが見つからなければ無効になる.
-- M2 は `render` で 1 パスのシェーダーを PNG にするところまで実装した (9 章の M2 に結果を書いた). 完了条件の preview との見比べも済んだ. 次は M3. `render` のオプションは `--out` (PNG ファイル), `--size`, `--at`, `--fps`, `--set`, `--no-lint` だけで, `--frames`, `--levels`, `--recording`, `--images` は M3 と M4 で足す.
+- M2 は `render` で 1 パスのシェーダーを PNG にするところまで実装し, preview と見比べた (9 章の M2).
+- M3 は複数パス, 持続バッファ, IMPORTED 画像を描けるようにし, `--frames` を足した (9 章の M3). 次は M4. `render` に無いオプションは `--levels`, `--recording`, `--images` で, M4 で足す.
 - このマシンには Homebrew で glslang と spirv-cross を入れた (2.).
 - 4 章の変換経路は一時ディレクトリで試しただけで, ファイルは残していない.
 - VDMX が使っているとみられる VIDVOX の公開実装を見つけ, ソースを読んだ (2.5). GLSL の組み立ては自前で書かず, その実装 (ISFGLSLGenerator) を組み込む方針に変えた. 3 章の写しは, その実装と VDMX が一致することの証拠として残している.
@@ -283,7 +284,7 @@ GPU コストは入力の値で変わる. Level が 0 (無音または未割り�
 - 録音ファイルの形式 (JSON Lines): `{"t": 0.0001, "address": "/Filter 3", "value": 0.768}`. `t` は秒. アドレスごとに時系列を作り, 時刻 `t` 以前の最後の値を使う (直前値保持). 録音の長さで繰り返す. vjcomponents の `preview/audio.ts` の `sampleTrack` が参照実装.
 - `event` 入力は常に false. `--set NAME=1` で毎フレーム true にできる.
 - `--set` は全モードで最後に適用する.
-- `audio` / `audioFFT` 型の入力は 0 で埋めたテクスチャ (幅 512, 高さ 1, 未検証の仮置き) を渡し, 表に注記する.
+- `image`, `audio`, `audioFFT` 型の入力には, ISFMSLScene と同じく 0 で埋めた 64x64 の BGRA8 テクスチャを渡す (検証済み. ISFMSLScene は値の無い画像と音声の入力にこれを渡す). VDMX は実際の音声を渡すので, bench の表には注記する.
 
 ## 7. 処理の流れ
 
@@ -319,17 +320,20 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 - 頂点データのバッファ番号は「頂点関数が使う最大のバッファ番号 + 1」. `MTLVertexDescriptor` もその番号で作る. uniform と同じ番号にするとエラーにならず位置がでたらめになる.
 - uniform: ISFGLSLGenerator が返す大きさを 48 の倍数に切り上げたバイト列を作る. 先頭 48 バイトが `ISFShaderRenderInfo`, 画像ごとの `ISFShaderImgInfo` と入力の値は `offsetInBuffer()` の位置に書く. パスごとに `PASSINDEX` と `RENDERSIZE` を書き換え, 新しい `MTLBuffer` にコピーして頂点とフラグメントの両方に渡す. 1 つの `MTLBuffer` を使い回すと, GPU が実行する時点の値 (後のパスの `PASSINDEX` など) を読んでしまう. 4 KB 未満なら `setVertexBytes` / `setFragmentBytes` でもよい.
 - `ISFShaderImgInfo`: `rect` はテクスチャの中の使う範囲 (普通は 0,0,1,1), `size` はそのピクセル数, `flip` は普通のテクスチャで 1 (2.5).
-- パスのテクスチャ: 8 bit は `bgra8Unorm`, `FLOAT` は RGBA の float (ISFMSLKit の `VVMTLPool rgbaFloatTexSized` の形式を確かめて合わせる. 32F の見込み). vjcomponents には 8 bit 前提の値の詰め方をしているシェーダーがある.
-- 持続バッファの初期内容 (未検証). ISFGLSLGenerator の `ISFPassTarget.hpp` のコメントには「作ったときに黒で埋める必要がある」とあるが, ISFMSLKit はテクスチャを VVMetalKit の `VVMTLPool` から取り, ロードアクションも `dontCare` で, VVMetalKit のソースにテクスチャを消す処理は見当たらなかった. つまり VDMX でも 1 フレーム目の持続バッファの中身は不定かもしれない. isftool は結果を毎回同じにするため黒 (0,0,0,0) で埋める. 計測には影響しないが, render の PNG を VDMX と比べるとき (M3) は最初の数フレームが違いうることに注意する.
-- 読み書きの入れ替えは ISFMSLKit のやり方に合わせる.
+- パスのテクスチャ: 8 bit は `bgra8Unorm`, `FLOAT` は `rgba32Float` (検証済み. `VVMTLPool rgbaFloatTexSized` の形式). 最後のパスが `FLOAT` のとき, ISFMSLScene は 8 bit の出力テクスチャ (RENDERSIZE の大きさ) に直接描かず, VVMetalKit の `CopierMTLScene` で写す. ISFMSLScene は `SizingModeFit` を渡すが, `CopierMTLScene` はこの値を使わず, 元の画像全体を出力全体に引き伸ばす (compute シェーダーで, 線形補間, 端はクランプ, 書き込むときに 0 から 1 に収まる). isftool はこの compute シェーダーを移して同じように写す (ソースで確かめた. GPU 時間にこの写しも入る).
+  - 検査用シェーダー (`float_accumulate.fs`, `byte_accumulate.fs`, `float_output.fs`) で確かめた. 毎フレーム 0.001 を足すと, FLOAT のバッファは 100 フレームで 0.1 (8 bit で 26) になり, 8 bit のバッファは 0 のまま. 半分の幅の FLOAT の最後のパスは, 出力の大きさに引き伸ばされる. VDMX (120 fps) でも同じだった (検証済み). FLOAT のバッファは 600 フレームごとに 0 から 6 割くらいの灰色まで明るくなり, 8 bit のバッファは黒のまま, 半分の幅の FLOAT の最後のパスは赤が出力のちょうど左半分を占め, 帯は出なかった (fit ではなく引き伸ばし). 検査用シェーダーは VDMX で見られるよう 600 フレームごとにやり直す. vjcomponents には 8 bit 前提の値の詰め方をしているシェーダーがある.
+- 持続バッファの初期内容 (未検証). ISFGLSLGenerator の `ISFPassTarget.hpp` のコメントには「作ったときに黒で埋める必要がある」とあるが, ISFMSLKit はテクスチャを VVMetalKit の `VVMTLPool` から取り, ロードアクションも `dontCare` で, VVMetalKit のソースにテクスチャを消す処理は見当たらなかった. つまり VDMX でも 1 フレーム目の持続バッファの中身は不定かもしれない. isftool は結果を毎回同じにするため黒 (0,0,0,0) で埋める. 大きさが変わったバッファも作り直して黒から始める (ISFMSLScene も大きさが合わなければ新しいテクスチャを取る). 計測には影響しないが, render の PNG を VDMX と比べるとき (M3) は最初の数フレームが違いうることに注意する.
+- 読み書きの入れ替え (検証済み). ISFMSLScene はパスごとに新しいテクスチャに描き, 描き終えたらそれをパスの画像にする. 描いている間に読めるのは前の画像なので, 持続バッファは自分の前のフレームを読める. isftool はパスごとに 2 枚を持って入れ替える. TARGET のあるパスは, 描かれる前でも前のフレームの画像が見える.
+- 持続でないパスの扱い. ISFMSLScene はフレームの終わりに画像を手放し, 次のフレームでプールから取り直す (中身は不定). isftool は前のフレームの画像を持ち越す. 描く前に読むシェーダーでなければ結果は変わらない.
+- パスの大きさは入力の値が変わったときだけ評価し直す (exprtk は入力の値を変数として使うので).
 - ロードアクションはカスタムの頂点シェーダーがあるときだけクリア, それ以外は `dontCare` (ISFMSLKit と同じ). 持続でないバッファの初期内容は保証されないので, それに頼るシェーダーは VDMX でも不定になる.
 - サンプラー: 正規化座標, 線形補間, 端はクランプ.
-- IMPORTED の画像は ImageIO で読んでテクスチャにする. 画素形式と `flip` は ISFMSLKit が画像を読み込む箇所に合わせる.
+- IMPORTED の画像は ISFMSLScene と同じく `MTKTextureLoader` で, `SRGB: false` を付けて読む (検証済み). 読み込んだテクスチャは 1 行目が画像の上になる.
 - 上下の向き (M2 と M3 で必ず確かめる).
   - 形の向き: 3.1 の射影では `VERTEXDATA (0,0)` が NDC の y = +1 (上) に来るので, 正規化座標の y = 1 が出力 PNG の一番上の行になる見込み. M2 で spiral_gratings が preview と上下反転して出たら, 頂点の並べ方が間違っている. テクスチャの反転で補わないこと.
-  - テクスチャの向き: `flip = 1` で正しく読めるはず (2.5). 次の検査用シェーダーで確かめる.
-  - バッファ: 1 フレーム目に上半分だけ白を書き, 2 フレーム目以降は自分のバッファを `IMG_THIS_PIXEL` で読んで写すシェーダー. 出力の上半分が白なら正しい.
-  - 画像: 上半分が白の PNG を IMPORTED で読んで表示するシェーダー.
+  - テクスチャの向き (検証済み, M3). ISFMSLScene が使うテクスチャ (プールのものも `MTKTextureLoader` のものも) は `flipV` が NO なので, `_X_flip` は常に 1 になる. 生成 GLSL は flip が 1 のとき y を 1 − y にして読むので, 左下原点の ISF の座標で, 1 行目が上のテクスチャを正しく読める. 次の 2 本で確かめ, 統合テストに残した.
+  - バッファ: 1 フレーム目に上半分だけ白を書き, 2 フレーム目以降は自分のバッファを読んで写すシェーダー (`Tests/ISFKitTests/Fixtures/persistent_orientation.fs`. 左半分は `IMG_THIS_PIXEL`, 右半分は `IMG_NORM_PIXEL`). 10 フレーム後も上半分が白だった.
+  - 画像: 上半分が白の PNG を IMPORTED で読んで表示するシェーダー (`imported_orientation.fs` と `top_white.png`. 左半分は `IMG_NORM_PIXEL`, 右半分は `IMG_PIXEL`). 上半分が白だった.
 - 実装して分かったこと (検証済み, M2).
   - 向き. 3.1 の射影と ISFMSLScene の頂点の並び `(0,0) (0,H) (W,0) (W,H)` をそのまま使うと, 正規化座標の y = 1 が PNG の一番上の行, x = 1 が一番右の列になった. どこにも反転は要らない. `Tests/ISFKitTests/Fixtures/orientation.fs` と統合テスト `testRenderFacesTheSameWayAsISF` に残した.
   - 頂点の記述子. ISFMSLKit は `layouts[1]` に stride を書くが, 頂点データの番号は「頂点関数の最大のバッファ番号 + 1」なので, 番号が 1 でないシェーダーでは合わない. isftool は同じ番号の `layouts` に書く. vjcomponents の全シェーダーで番号は 1 なので結果は変わらない.
@@ -454,6 +458,10 @@ isftool/
 ### M3: 複数パス, 持続バッファ, 画像
 - 7.3 の向きの検査用シェーダー 2 本で `_X_flip` の扱いを決め, テストに残す.
 - 完了条件: `line_space.fs` (幅 4 の持続バッファ), `ripple_shapes.fs` (幅 48 の持続バッファと IMPORTED 画像), `random_line.fs` (出力と同じ大きさの持続バッファ) が, 数十フレーム進めた PNG で preview と同じように見える.
+- 結果 (2026-11-04).
+  - `render` に `--frames N` を足した. `--at` の時刻から N 枚を書き出し, それより前のフレームも 0 から描く (持続バッファを溜めるため). 1 枚で `--out` が `.png` ならそのファイルに, それ以外は `--out` をディレクトリとして `<名前>_<FRAMEINDEX 5 桁>.png` に書く.
+  - 3 本とも `--at 3 --size 1280x720` (180 フレーム) で描き, preview の画面と見比べた. line_space は縦の細い線が並び, random_line は幅と明るさの違う縦の帯が並ぶ. ripple_shapes は Volume を preview が録音から与えるので `--set LvVolume=1` で描き, Circle では同心円, Line Circle (`--set Switch=4`) では IMPORTED 画像の線の円が広がった. 元の画像の内側の円は下が切れていて, isftool の PNG でも preview でも下が切れている (画像が上下反転していない). 比べたのは目で見た形で, 時刻と Level の値は preview と揃えられないので, 画素ごとの差は取っていない.
+  - rejected を除く 162 本を `--at 1` で描くと, 161 本が PNG になった (残りは Metal で落ちる nested_frames_3d). 全面が透明なのは 24 本で, strobe 系 23 本と ripple_shapes. どれも Level 入力が DEFAULT の 0 のとき何も描かない.
 
 ### M4: bench
 - 7.4 と 7.5 と 6 章を実装する.
@@ -474,7 +482,7 @@ isftool/
   2. VIDVOX の改造版 (`mrRay/glslang` の `GLSLangValidatorLib` ブランチ, `mrRay/SPIRV-Cross` の `SPIRVCrossLib` ブランチ) をソースからビルドして使う. VDMX に最も近いが, ビルドが重い.
   3. ISFMSLKit の `extern/` に同梱されたビルド済みの dylib を呼ぶ. 手軽だが, 外部のビルド済みバイナリを実行することになる. ISFMSLKit のライセンスは GitHub 上で判定されていない (NOASSERTION) ので, 配布するなら確認が要る.
 - VDMX6 が使っているのが公開版の ISFMSLKit そのものかは分からない (社内で手を入れている可能性がある). VDMX で落ちて isftool で通るシェーダーが見つかったら, エラー画面の GLSL を 3 章に追記し, check のテストに足す.
-- `audio` / `audioFFT` 入力のテクスチャの形 (幅, 高さ, 形式) は ISFMSLKit のソースで確かめる.
+- `audio` / `audioFFT` 入力に VDMX が渡すテクスチャの形 (幅, 高さ, 形式) は分かっていない. ISFMSLKit は値が無いとき 64x64 の空のテクスチャを渡すだけで, 音声を詰める処理は VDMX 側にある. GPU 時間への影響は小さいとみて, 空のテクスチャで測る.
 - GPU 時間は VDMX の出力 fps と一致しない (VDMX は合成, レイヤー FX, Syphon 出力も描く). 順位付けと前後比較に使う.
 - Apple GPU はタイルベースなので, パスの多いシェーダーはパスごとのロードとストアのコストも乗る. これは VDMX でも同じなので, そのまま測る.
 - 熱で GPU のクロックが下がると数字がぶれる. 長い一括計測では `--repeat` と並び順の工夫で見分ける.
