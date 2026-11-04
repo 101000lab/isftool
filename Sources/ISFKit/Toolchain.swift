@@ -29,22 +29,25 @@ public struct ProcessRunner: CommandRunner {
         process.arguments = arguments
         let out = Pipe()
         let err = Pipe()
+        let input = Pipe()
         process.standardOutput = out
         process.standardError = err
-        let input = Pipe()
         process.standardInput = stdin == nil ? FileHandle.nullDevice : input
         try process.run()
 
         // Drain both pipes concurrently, otherwise a child that fills one pipe blocks forever.
-        let group = DispatchGroup()
+        // The readers get their own threads instead of DispatchQueue.global(): when many checks run in parallel
+        // (swift-testing does), every global worker can be one of them waiting here, and the reads never start.
         let box = OutputBox()
-        DispatchQueue.global().async(group: group) { box.out = out.fileHandleForReading.readDataToEndOfFile() }
-        DispatchQueue.global().async(group: group) { box.err = err.fileHandleForReading.readDataToEndOfFile() }
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { box.out = out.fileHandleForReading.readDataToEndOfFile(); done.signal() }
+        Thread.detachNewThread { box.err = err.fileHandleForReading.readDataToEndOfFile(); done.signal() }
         if let stdin {
             input.fileHandleForWriting.write(Data(stdin.utf8))
             try? input.fileHandleForWriting.close()
         }
-        group.wait()
+        done.wait()
+        done.wait()
         process.waitUntilExit()
         return CommandResult(
             status: process.terminationStatus,
