@@ -8,7 +8,8 @@ ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (G
 - M0 は完了. M1 は check, info, dump (`uniforms` を除く) を実装し, 完了条件 0 から 7 をテストか手元の実行で確かめた (9 章の M1 に結果を書いた). 未実装は `dump uniforms` と `~/Library/Caches/isftool/` の変換結果キャッシュ.
 - テストは `swift test`. Command Line Tools には XCTest が無いので swift-testing (`import Testing`) で書いた. ISFGLSLGenerator と Homebrew の glslang / spirv-cross と Metal を実際に通す統合テスト (`Tests/ISFKitTests/IntegrationTests.swift`) は, ツールが見つからなければ無効になる.
 - M2 は `render` で 1 パスのシェーダーを PNG にするところまで実装し, preview と見比べた (9 章の M2).
-- M3 は複数パス, 持続バッファ, IMPORTED 画像を描けるようにし, `--frames` を足した (9 章の M3). 次は M4. `render` に無いオプションは `--levels`, `--recording`, `--images` で, M4 で足す.
+- M3 は複数パス, 持続バッファ, IMPORTED 画像を描けるようにし, `--frames` を足した (9 章の M3).
+- M4 は `bench` と 6 章の Level モードを実装し, `render` にも `--levels`, `--recording`, `--level-pattern` を足した (9 章の M4). 完了条件は 4 つとも満たした (4 は例のシェーダーを差し替えた). `--images` はまだ無い. 次は M5.
 - このマシンには Homebrew で glslang と spirv-cross を入れた (2.).
 - 4 章の変換経路は一時ディレクトリで試しただけで, ファイルは残していない.
 - VDMX が使っているとみられる VIDVOX の公開実装を見つけ, ソースを読んだ (2.5). GLSL の組み立ては自前で書かず, その実装 (ISFGLSLGenerator) を組み込む方針に変えた. 3 章の写しは, その実装と VDMX が一致することの証拠として残している.
@@ -284,6 +285,10 @@ GPU コストは入力の値で変わる. Level が 0 (無音または未割り�
 - 録音ファイルの形式 (JSON Lines): `{"t": 0.0001, "address": "/Filter 3", "value": 0.768}`. `t` は秒. アドレスごとに時系列を作り, 時刻 `t` 以前の最後の値を使う (直前値保持). 録音の長さで繰り返す. vjcomponents の `preview/audio.ts` の `sampleTrack` が参照実装.
 - `event` 入力は常に false. `--set NAME=1` で毎フレーム true にできる.
 - `--set` は全モードで最後に適用する.
+- 実装して分かったこと (M4).
+  - Filter の数. vj_controller は VDMX のプロジェクトの Audio Analysis にある Filter の数で折り返すが, isftool にはプロジェクトが無いので, 録音に出てくる `/Filter N` のアドレスの数を使う (vdmx_mic.jsonl は 16).
+  - 入力の値が毎フレーム変わる recording モードでは, パスの大きさも毎フレーム評価し直す (CPU の時間で, GPU の時間には入らない).
+  - `polar_waveform` と `data_matrix` は Level で描く絵は変わるが, GPU の時間は 3 つのモードで同じだった (9 章の M4). 画素ごとの計算量が Level に依らない作りのため. Level で重さが変わるのは, Level に応じて描く要素の数を増やすシェーダー (ripple_shapes の Shard など).
 - `image`, `audio`, `audioFFT` 型の入力には, ISFMSLScene と同じく 0 で埋めた 64x64 の BGRA8 テクスチャを渡す (検証済み. ISFMSLScene は値の無い画像と音声の入力にこれを渡す). VDMX は実際の音声を渡すので, bench の表には注記する.
 
 ## 7. 処理の流れ
@@ -351,6 +356,11 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 - フレームごとに `waitUntilCompleted` で待つので, フレームの間は GPU が休む. 連続で描き続けるときより数字が少し高めに出るが, 順位付けと前後比較には問題ない. README にも書く.
 - `compile_ms.metal` は 2 回目以降に速く出る. OS が Metal のコンパイル結果をキャッシュするため. 初回の値とキャッシュ後の値を混同しない.
 - 1 本ずつ測る. 測る順番の影響を減らすため, シェーダーを切り替えたら最初の数フレームを捨てる (warmup に含まれる).
+- 実装して分かったこと (検証済み, M4).
+  - GPU のクロック. check で glslang と SPIRV-Cross を動かす数百 ms の間に GPU のクロックが下がり, 軽いシェーダーでは warmup の 60 フレームでは戻らない. spiral_gratings は 1 回目の計測だけが 0.30 ms で, 2 回目以降は 0.17 ms だった. そこで計測の前に, 捨てる renderer で 0.5 秒描き続けて GPU を起こす. 何もしないシェーダーも 0.16 ms から 0.036 ms になった.
+  - `--repeat`. 回ごとに renderer を作り直し, フレーム 0 から同じフレームを測る. 時刻を続けて測ると, 時間で描く量が変わるシェーダー (line_space は線が増える) の回ごとの差が中身の差になってしまうため. 表には回ごとの中央値の幅 (最大 − 最小) を中央値で割った値を `spread` として出す.
+  - 集計. 中央値は個数が偶数なら真ん中の 2 つの平均. p95 は nearest rank (`ceil(0.95 n)` 番目) で, 必ず測った値のどれかになる. 標準偏差は母標準偏差 (測ったフレームが全体で, 標本ではないため).
+  - `compile_ms.metal` は最初の renderer を作る時間 (MSL のコンパイルとパイプラインの作成).
 
 ### 7.5 出力
 
@@ -367,6 +377,9 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 ```
 
 - 前回比は, 同じ shader パス, size, mode, frames の直近の行と比べる. `sha256` が違えばシェーダーが変わったことが分かる.
+- `shader` はコマンドラインで渡したパスをそのまま入れる (`--from` の一覧を同じ場所から渡せば前回と比べられる. 別のディレクトリから相対パスで渡すと別のシェーダーとみなされる).
+- 実装で足した項目. `passes` (パスの数) と, `--repeat` が 2 以上のとき `repeats` (回ごとの中央値). そのとき `ms.median` は回ごとの中央値の中央値.
+- 結果は 1 本 1 モード測るたびに追記する (長い一括計測が途中で止まっても, それまでの結果が残る). 失敗したシェーダーは結果ファイルに書かず, 表と `--json` の `failures` にだけ出す.
 - `git` はシェーダーのあるリポジトリで `git rev-parse` と `git status --porcelain` を取る. リポジトリでなければ省く.
 
 ## 8. 構成 (SwiftPM)
@@ -469,7 +482,12 @@ isftool/
   1. 何もしないシェーダーが 1 ms を大きく下回る.
   2. 同じシェーダーを 3 回測って中央値のばらつきが 5% 以内.
   3. vjcomponents で重いと分かっているものが上位に来る. 参考: preview (1280x720, WebGL) では ripple_shapes の Shard が約 13 fps, gravity_flow が約 17 fps, randomgravities が約 20 fps, Circle の ripple_shapes が約 68 fps だった.
-  4. `--modes recording,max` で, Level で描く量が変わるシェーダー (例: `isfs/signal/polar_waveform.fs`, `isfs/signal/data_matrix.fs`) は max のほうが重く出る.
+  4. `--modes recording,max` で, Level で描く要素の数が変わるシェーダー (例: `isfs/geometry/ripple_shapes.fs` の Shard, `--set Switch=5`) は max のほうが重く出る. 当初の例の polar_waveform と data_matrix は, 描く絵は変わっても GPU の時間が変わらないので外した (2026-11-04, ユーザーの判断).
+- 結果 (2026-11-04, 1920x1440 は既定の大きさ).
+  1. 何もしないシェーダー (`Tests/ISFKitTests/Fixtures/empty.fs`) は 1920x1440 で 0.036 ms.
+  2. `--repeat 3` で, spiral_gratings は 3 回とも 0.174 ms, line_space は 0.466, 0.487, 0.487 ms (幅 4.4%), randomgravities は 76.99, 77.13, 77.21 ms (幅 0.3%). 計測の前に GPU を起こすようにする前は, 軽いシェーダーの 1 回目だけが倍近く遅かった (7.4).
+  3. 1280x720 の max モードで, gravity_flow 28.56 ms, randomgravities 26.29 ms, ripple_shapes の Shard (`--set Switch=5`) 10.67 ms, Circle (`--set Switch=1`) 0.27 ms. 重い 3 本が上位に来て, Circle は軽い. 3 本の中の順番は preview (Shard が最も重い) と違う. preview は WebGL で, Level も録音から与えている.
+  4. polar_waveform (0.76 ms) と data_matrix (0.17 ms) は default, recording, max の 3 つで同じだった. Level の値は描画に届いている (3 つのモードで PNG が違う) が, 画素ごとの計算量は Level に依らない. strobe_lamps と strobe_rings も同じ. 一方 ripple_shapes の Shard は default 0.51 ms, recording 12.5 ms, max 32.4 ms で, モードの違いを捉えられている. そこで条件 4 の例を ripple_shapes の Shard に置き換え, 条件を満たした.
 
 ### M5: 仕上げ
 - README (インストール, 例, 数字の読み方と限界).
