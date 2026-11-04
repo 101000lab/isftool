@@ -1,0 +1,85 @@
+name: tagpr
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  tagpr:
+    runs-on: ubuntu-latest
+    outputs:
+      tagpr-tag: ${{ steps.run-tagpr.outputs.tag }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: run-tagpr
+        name: Run tagpr
+        uses: Songmu/tagpr@0c4eb5a3b0862693702acea436a7c68bd586530d # v1.21.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  assets:
+    needs: tagpr
+    if: needs.tagpr.outputs.tagpr-tag != ''
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tagpr.outputs.tagpr-tag }}
+          fetch-depth: 0
+          submodules: true
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcode-select -p
+          swift --version
+
+      - name: Build release binary
+        run: swift build -c release --arch arm64
+
+      - name: Package archive
+        id: pkg
+        run: |
+          TAG="${{ needs.tagpr.outputs.tagpr-tag }}"
+          VERSION="${TAG#v}"
+          BIN="$(swift build -c release --arch arm64 --show-bin-path)/isftool"
+          STAGE="$(mktemp -d)"
+          cp "$BIN" "$STAGE/isftool"
+          cp LICENSE CREDITS README.md "$STAGE/"
+          ARCHIVE="isftool_v${VERSION}_darwin_arm64.tar.gz"
+          tar -C "$STAGE" -czf "$ARCHIVE" .
+          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.tagpr.outputs.tagpr-tag }}" \
+            "${{ steps.pkg.outputs.archive }}" \
+            --clobber
+
+  release:
+    needs: [tagpr, assets]
+    if: needs.tagpr.outputs.tagpr-tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api /repos/${{ github.repository }}/releases/generate-notes \
+              -f tag_name=${{ needs.tagpr.outputs.tagpr-tag }} --jq .body \
+            | gh release edit ${{ needs.tagpr.outputs.tagpr-tag }} \
+                --repo ${{ github.repository }} \
+                --draft=false --latest --notes-file=-

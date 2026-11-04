@@ -7,23 +7,26 @@ A WebGL preview runs a different compiler and a different GPU API, so it cannot 
 - Whether a shader compiles in VDMX at all. Metal keywords such as `level` break a shader that WebGL accepts.
 - How much GPU time a shader takes per frame, with Level inputs at their defaults, at their maximum, or driven by a recording of VDMX's Audio Analysis.
 
-## Requirements
-
-- macOS 14 or later on a Mac with Metal.
-- Swift 6 (Xcode or the Command Line Tools).
-- glslang and spirv-cross on `PATH`, or given with `--glslang` and `--spirv-cross`.
-
-```sh
-brew install glslang spirv-cross
-```
-
 ## Install
 
-```sh
-git clone --recursive https://github.com/101000lab/isftool.git
-cd isftool
-swift build -c release
-cp .build/release/isftool /usr/local/bin/
+**homebrew tap:**
+
+```console
+$ brew install k1LoW/tap/isftool
+```
+
+This also installs glslang and spirv-cross. The release binary is for Apple Silicon and needs macOS 14 or later.
+
+**From source:**
+
+Building needs Swift 6 (Xcode or the Command Line Tools), and isftool needs glslang and spirv-cross on `PATH` at run time, or given with `--glslang` and `--spirv-cross`.
+
+```console
+$ brew install glslang spirv-cross
+$ git clone --recursive https://github.com/101000lab/isftool.git
+$ cd isftool
+$ swift build -c release
+$ cp .build/release/isftool /usr/local/bin/
 ```
 
 ISFGLSLGenerator is a git submodule under `Vendor/`. If you cloned without `--recursive`, run `git submodule update --init` before building.
