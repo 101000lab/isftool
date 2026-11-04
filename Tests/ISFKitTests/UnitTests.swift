@@ -104,77 +104,6 @@ import Testing
     }
 }
 
-@Suite struct LintTests {
-    @Test func testFindsReservedIdentifiersWithPositions() {
-        let src = "/*{ \"INPUTS\": [] }*/\nvec2 vertex(float a) {\n  return vec2(a);\n}\n"
-        let v = Lint.scan(source: src)
-        #expect(v == [LintViolation(identifier: "vertex", line: 2, column: 6, message: "'vertex' is a Metal keyword")])
-    }
-
-    @Test func testIgnoresCommentsAndLongerIdentifiers() {
-        let src = "// vertex here\n/* kernel\n device */ float vertexCount; float my_half;\n"
-        #expect(Lint.scan(source: src) == [])
-    }
-
-    @Test func testReportsDeclaredNamesFromMetadata() {
-        let src = "/*{\n  \"INPUTS\": [ { \"NAME\": \"half\", \"TYPE\": \"float\" } ]\n}*/\nvoid main() {}\n"
-        let v = Lint.scan(source: src, declaredNames: ["half"])
-        #expect(v.map(\.identifier) == ["half"])
-        #expect(v.first?.line == 2)
-    }
-
-    @Test func testAllowsNamesVDMXAccepts() {
-        #expect(Lint.scan(source: "void main() {\n  float visible = 1.0;\n}\n") == [])
-    }
-}
-
-@Suite struct ToolchainTests {
-    final class Recorder: CommandRunner, @unchecked Sendable {
-        var calls: [(String, [String], String?)] = []
-        var result = CommandResult(status: 0)
-        func run(_ executable: String, _ arguments: [String], stdin: String?) throws -> CommandResult {
-            calls.append((executable, arguments, stdin))
-            return result
-        }
-    }
-
-    @Test func testGlslangArgumentsMatchVIDVOX() {
-        #expect(Toolchain.glslangArguments(stage: .frag, output: "f.spv") == ["-G", "--amb", "--aml", "--stdin", "-S", "frag", "-o", "f.spv"])
-    }
-
-    @Test func testSpirvCrossArgumentsMatchVIDVOX() {
-        #expect(
-            Toolchain.spirvCrossArguments(input: "v.spv", entryPoint: "VVxVertFunc", stage: .vert, output: "v.metal")
-                == ["v.spv", "--rename-entry-point", "main", "VVxVertFunc", "vert", "--msl", "--output", "v.metal"]
-        )
-    }
-
-    @Test func testCompilePassesSourceOnStdin() throws {
-        let rec = Recorder()
-        let tc = Toolchain(glslang: "/g", spirvCross: "/s", runner: rec)
-        _ = try tc.compileGLSL("void main(){}", stage: .vert, output: "o.spv")
-        #expect(rec.calls.first?.0 == "/g")
-        #expect(rec.calls.first?.2 == "void main(){}")
-    }
-
-    @Test func testLocateSearchesPath() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        for name in ["glslangValidator", "spirv-cross"] {
-            let p = dir.appendingPathComponent(name).path
-            FileManager.default.createFile(atPath: p, contents: Data(), attributes: [.posixPermissions: 0o755])
-        }
-        let tc = try Toolchain.locate(environment: ["PATH": "/nonexistent:\(dir.path)"])
-        #expect(tc.glslang == dir.appendingPathComponent("glslangValidator").path)
-        #expect(tc.spirvCross == dir.appendingPathComponent("spirv-cross").path)
-    }
-
-    @Test func testLocateFailsWhenMissing() {
-        #expect(throws: (any Error).self) { try Toolchain.locate(environment: ["PATH": "/nonexistent"]) }
-    }
-}
-
 @Suite struct CheckerTests {
     struct StubSource: ISFSourceGenerating {
         var document: ISFDocumentInfo
@@ -187,20 +116,19 @@ import Testing
     }
 
     /// Fails glslang for one stage, otherwise writes `msl` as spirv-cross output.
-    final class FakeTools: CommandRunner, @unchecked Sendable {
+    final class FakeTools: Toolchain, @unchecked Sendable {
         var failStage: ShaderStage?
         var glslangLog = ""
         var msl: [ShaderStage: String] = [:]
-        func run(_ executable: String, _ arguments: [String], stdin: String?) throws -> CommandResult {
-            if executable == "glslang" {
-                let stage = ShaderStage(rawValue: arguments[arguments.firstIndex(of: "-S")! + 1])!
-                return stage == failStage ? CommandResult(status: 2, stdout: glslangLog) : CommandResult(status: 0)
-            }
-            let stage = ShaderStage(rawValue: arguments[4])!
-            let out = arguments[arguments.firstIndex(of: "--output")! + 1]
-            try msl[stage, default: ""].write(toFile: out, atomically: true, encoding: .utf8)
+        func compileGLSL(_ source: String, stage: ShaderStage, output: String) throws -> CommandResult {
+            stage == failStage ? CommandResult(status: 1, stdout: glslangLog) : CommandResult(status: 0)
+        }
+        func convertToMSL(spirv: String, entryPoint: String, stage: ShaderStage, output: String) throws -> CommandResult {
+            try msl[stage, default: ""].write(toFile: output, atomically: true, encoding: .utf8)
             return CommandResult(status: 0)
         }
+        func reflect(spirv: String) throws -> CommandResult { CommandResult(status: 0) }
+        func disassemble(_ source: String, stage: ShaderStage, output: String) throws -> CommandResult { CommandResult(status: 0) }
     }
 
     struct NoMetal: MSLCompiling {
@@ -227,11 +155,11 @@ import Testing
     func checker(_ tools: FakeTools, document: ISFDocumentInfo? = nil) -> Checker {
         let doc = document ?? self.document
         let generated = ISFGeneratedSource(frag: "#version 400\nuniform float Level;\n" + doc.fragSource, vert: "#version 400\n")
-        return Checker(source: StubSource(document: doc, generated: generated), toolchain: Toolchain(glslang: "glslang", spirvCross: "spirv-cross", runner: tools), metal: NoMetal())
+        return Checker(source: StubSource(document: doc, generated: generated), toolchain: tools, metal: NoMetal())
     }
 
     @Test func testParseFailure() {
-        let c = Checker(source: FailingSource(), toolchain: Toolchain(glslang: "glslang", spirvCross: "spirv-cross", runner: FakeTools()), metal: nil)
+        let c = Checker(source: FailingSource(), toolchain: FakeTools(), metal: nil)
         let r = c.check(path: "s.fs", workDirectory: tmp())
         #expect(r.report.stage == .parse)
         #expect(!(r.report.ok))
@@ -271,19 +199,6 @@ import Testing
         let r = checker(tools).check(path: "s.fs", workDirectory: dir)
         #expect(r.report.stage == .unbound)
         #expect(r.report.unbound == [UnboundArgument(name: "mine", kind: "texture", index: 0)])
-    }
-
-    @Test func testLintRunsLastAndCanBeDisabled() {
-        let tools = FakeTools()
-        tools.msl = cleanMSL()
-        var doc = document
-        doc.fragSource = "float kernel = 1.0;\nvoid main() {}\n"
-        let dir = tmp()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        var c = checker(tools, document: doc)
-        #expect(c.check(path: "s.fs", workDirectory: dir).report.stage == .lint)
-        c.options.lint = false
-        #expect(c.check(path: "s.fs", workDirectory: dir).report.ok)
     }
 }
 

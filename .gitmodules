@@ -1,3 +1,9 @@
 [submodule "Vendor/ISFGLSLGenerator"]
 	path = Vendor/ISFGLSLGenerator
 	url = https://github.com/mrRay/ISFGLSLGenerator
+[submodule "Vendor/glslang"]
+	path = Vendor/glslang
+	url = https://github.com/KhronosGroup/glslang.git
+[submodule "Vendor/SPIRV-Cross"]
+	path = Vendor/SPIRV-Cross
+	url = https://github.com/KhronosGroup/SPIRV-Cross.git

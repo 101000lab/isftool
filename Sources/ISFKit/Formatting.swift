@@ -43,12 +43,6 @@ public enum CheckFormatter {
         for u in report.unbound {
             out.append("  unbound: \(u.name) (\(u.kind) \(u.index))")
         }
-        for v in report.lint {
-            out.append("  lint: \(v.line.map { "fs:\($0): " } ?? "")\(v.message)")
-            if let line = v.line, let fs {
-                out.append(indent(SourceExcerpt.render(fs, line: line, context: 0)))
-            }
-        }
         return out.joined(separator: "\n")
     }
 

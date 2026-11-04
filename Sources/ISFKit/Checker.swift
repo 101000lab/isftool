@@ -6,7 +6,6 @@ public enum CheckStage: String, Codable, Sendable, CaseIterable {
     case spirvCross = "spirv-cross"
     case metal
     case unbound
-    case lint
 }
 
 /// Produces the ISF snapshot and generated GLSL. The default goes through ISFGLSLGenerator; tests can supply strings.
@@ -61,18 +60,16 @@ public struct CheckReport: Codable, Equatable, Sendable {
     public var error: String?
     public var diagnostics: [GLSLDiagnostic]
     public var unbound: [UnboundArgument]
-    public var lint: [LintViolation]
     /// Milliseconds per stage, keyed by stage name.
     public var timings: [String: Double]
 
-    public init(path: String, ok: Bool = true, stage: CheckStage? = nil, error: String? = nil, diagnostics: [GLSLDiagnostic] = [], unbound: [UnboundArgument] = [], lint: [LintViolation] = [], timings: [String: Double] = [:]) {
+    public init(path: String, ok: Bool = true, stage: CheckStage? = nil, error: String? = nil, diagnostics: [GLSLDiagnostic] = [], unbound: [UnboundArgument] = [], timings: [String: Double] = [:]) {
         self.path = path
         self.ok = ok
         self.stage = stage
         self.error = error
         self.diagnostics = diagnostics
         self.unbound = unbound
-        self.lint = lint
         self.timings = timings
     }
 }
@@ -98,11 +95,9 @@ public struct CheckResult: Sendable {
 }
 
 public struct CheckOptions: Sendable {
-    public var lint: Bool
     public var metal: Bool
 
-    public init(lint: Bool = true, metal: Bool = true) {
-        self.lint = lint
+    public init(metal: Bool = true) {
         self.metal = metal
     }
 }
@@ -210,14 +205,6 @@ public struct Checker {
         if !report.unbound.isEmpty {
             let list = report.unbound.map { "\($0.name) (\($0.kind) \($0.index))" }.joined(separator: ", ")
             return fail(.unbound, "declares arguments the ISF host cannot supply: \(list)")
-        }
-
-        if options.lint {
-            let declared = document.inputs.map(\.name) + document.imports.map(\.name) + document.passes.map(\.target).filter { !$0.isEmpty }
-            report.lint = Lint.scan(source: document.jsonSource + document.fragSource, declaredNames: declared)
-            if !report.lint.isEmpty {
-                return fail(.lint, "uses Metal keywords: \(Set(report.lint.map(\.identifier)).sorted().joined(separator: ", "))")
-            }
         }
 
         return CheckResult(report: report, artifacts: artifacts)

@@ -15,27 +15,26 @@ A WebGL preview runs a different compiler and a different GPU API, so it cannot 
 $ brew install k1LoW/tap/isftool
 ```
 
-This also installs glslang and spirv-cross. The release binary is for Apple Silicon and needs macOS 14 or later.
+The release binary is for Apple Silicon and needs macOS 14 or later. glslang and SPIRV-Cross are built in, so nothing else is needed.
 
 **From source:**
 
-Building needs Swift 6 (Xcode or the Command Line Tools), and isftool needs glslang and spirv-cross on `PATH` at run time, or given with `--glslang` and `--spirv-cross`.
+Building needs Swift 6 (Xcode or the Command Line Tools).
 
 ```console
-$ brew install glslang spirv-cross
 $ git clone --recursive https://github.com/101000lab/isftool.git
 $ cd isftool
 $ swift build -c release
 $ cp .build/release/isftool /usr/local/bin/
 ```
 
-ISFGLSLGenerator is a git submodule under `Vendor/`. If you cloned without `--recursive`, run `git submodule update --init` before building.
+ISFGLSLGenerator, glslang and SPIRV-Cross are git submodules under `Vendor/`. If you cloned without `--recursive`, run `git submodule update --init` before building.
 
 ## Usage
 
 ### check
 
-Compiles shaders to Metal and reports the first stage that fails (`parse`, `lint`, `glsl`, `spirv-cross`, `metal` or `unbound`, the last one for a Metal function argument the ISF host cannot fill, such as a `uniform` the shader declares itself). The exit code is 1 when any shader fails.
+Compiles shaders to Metal and reports the first stage that fails (`parse`, `glsl`, `spirv-cross`, `metal` or `unbound`, the last one for a Metal function argument the ISF host cannot fill, such as a `uniform` the shader declares itself). The exit code is 1 when any shader fails.
 
 ```sh
 isftool check isfs/**/*.fs
@@ -46,8 +45,6 @@ isftool check --json isfs/depth/nested_frames_3d.fs
 ok    isfs/lines/line_space.fs  (parse 1ms, glsl 174ms, spirv_cross 142ms, metal 2ms)
 FAIL  isfs/depth/nested_frames_3d.fs  [metal frag] program_source:110:21: error: reference to 'level' is ambiguous
 ```
-
-The `lint` stage catches names that the Homebrew SPIRV-Cross leaves alone but that clash with Metal. `--no-lint` turns it off.
 
 ### render
 
@@ -111,10 +108,9 @@ isftool dump isfs/depth/nested_frames_3d.fs msl-frag
 
 ## Limits
 
-- isftool uses the Homebrew glslang and SPIRV-Cross, while VDMX uses older versions modified by VIDVOX. Most shaders come out the same, but a name that one version renames and the other does not can compile here and fail in VDMX. The `lint` stage covers the cases found so far.
+- glslang and SPIRV-Cross are built in at the commits VDMX6 Plus 6.1.3.6 ships, and give the same SPIR-V and Metal source as VDMX's copies, byte for byte, on over 400 shaders. `isftool --version` shows them. A later VDMX may ship other versions.
 - Image, audio and audioFFT inputs get a blank 64x64 texture, as ISFMSLScene gives when no source is connected. bench notes these shaders in the `note` column.
 - Cube inputs are not supported.
-- Shaders with a custom vertex shader (`.vs`) compile and render, but the lint does not look at the `.vs`.
 - GPU clocks drop when the Mac gets hot. For long runs use `--repeat` and check that `spread` stays small.
 
 ## Benchmarking a collection

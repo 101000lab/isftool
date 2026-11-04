@@ -1,3 +1,4 @@
+import CToolchain
 import Foundation
 
 public struct CommandResult: Equatable, Sendable {
@@ -72,62 +73,88 @@ public struct ToolchainError: Error, CustomStringConvertible, Sendable {
     public var description: String { message }
 }
 
-/// glslang and SPIRV-Cross invoked with the same arguments as VIDVOX's GLSLangValidatorLib and SPIRVCrossLib.
-public struct Toolchain: Sendable {
-    public var glslang: String
-    public var spirvCross: String
-    public var runner: CommandRunner
+/// GLSL to SPIR-V to MSL. Paths name the files each step writes, so `--keep-intermediates` can keep them.
+public protocol Toolchain: Sendable {
+    /// Writes the SPIR-V to `output`. A non-zero status carries glslang's log in `stdout`.
+    func compileGLSL(_ source: String, stage: ShaderStage, output: String) throws -> CommandResult
+    /// Reads the SPIR-V at `spirv` and writes the MSL to `output`.
+    func convertToMSL(spirv: String, entryPoint: String, stage: ShaderStage, output: String) throws -> CommandResult
+    /// SPIRV-Cross's reflection JSON in `stdout`.
+    func reflect(spirv: String) throws -> CommandResult
+    /// Compiles like `compileGLSL` and puts the readable SPIR-V after glslang's log in `stdout`.
+    func disassemble(_ source: String, stage: ShaderStage, output: String) throws -> CommandResult
+}
 
-    public init(glslang: String, spirvCross: String, runner: CommandRunner = ProcessRunner()) {
-        self.glslang = glslang
-        self.spirvCross = spirvCross
-        self.runner = runner
+/// glslang and SPIRV-Cross linked into isftool at the commits VDMX's ISFMSLKit was built from (design 2.5).
+public struct LinkedToolchain: Toolchain {
+    public static let glslangVersion = String(cString: isft_glslang_version())
+    public static let spirvCrossRevision = String(cString: isft_spirv_cross_revision())
+    /// The VDMX whose bundled glslang and SPIRV-Cross give the same SPIR-V and MSL as these, byte for byte (design 2.5).
+    public static let vdmxVersion = "VDMX6 Plus 6.1.3.6"
+    public static var versionSummary: String {
+        "glslang \(glslangVersion), SPIRV-Cross \(spirvCrossRevision.prefix(8)), as in \(vdmxVersion)"
     }
 
-    /// Resolves each tool from an explicit path or from PATH.
-    public static func locate(glslang: String? = nil, spirvCross: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, runner: CommandRunner = ProcessRunner()) throws -> Toolchain {
-        func find(_ explicit: String?, _ names: [String]) throws -> String {
-            if let explicit { return explicit }
-            let dirs = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
-            for name in names {
-                for dir in dirs {
-                    let candidate = (dir as NSString).appendingPathComponent(name)
-                    if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
-                }
-            }
-            throw ToolchainError(message: "\(names[0]) not found in PATH")
-        }
-        return Toolchain(
-            glslang: try find(glslang, ["glslang", "glslangValidator"]),
-            spirvCross: try find(spirvCross, ["spirv-cross"]),
-            runner: runner
-        )
-    }
-
-    /// `-G --amb --aml --stdin -S <stage>`. The source goes through stdin so error lines read `stdin:<line>` like VDMX.
-    public static func glslangArguments(stage: ShaderStage, output: String) -> [String] {
-        ["-G", "--amb", "--aml", "--stdin", "-S", stage.rawValue, "-o", output]
-    }
-
-    /// `--rename-entry-point main <name> <stage> --msl`. No MSL version and no `--msl-decoration-binding`, as in SPIRVCrossLib.
-    public static func spirvCrossArguments(input: String, entryPoint: String, stage: ShaderStage, output: String) -> [String] {
-        [input, "--rename-entry-point", "main", entryPoint, stage.rawValue, "--msl", "--output", output]
-    }
+    public init() {}
 
     public func compileGLSL(_ source: String, stage: ShaderStage, output: String) throws -> CommandResult {
-        try runner.run(glslang, Self.glslangArguments(stage: stage, output: output), stdin: source)
+        let (words, log) = Self.compile(source, stage: stage)
+        guard let words else { return CommandResult(status: 1, stdout: log) }
+        try Self.data(words).write(to: URL(fileURLWithPath: output))
+        return CommandResult(status: 0, stdout: log)
     }
 
     public func convertToMSL(spirv: String, entryPoint: String, stage: ShaderStage, output: String) throws -> CommandResult {
-        try runner.run(spirvCross, Self.spirvCrossArguments(input: spirv, entryPoint: entryPoint, stage: stage, output: output), stdin: nil)
+        let words = try Self.words(at: spirv)
+        var msl: UnsafeMutablePointer<CChar>?
+        var error: UnsafeMutablePointer<CChar>?
+        defer { isft_free(msl); isft_free(error) }
+        let ok = words.withUnsafeBufferPointer { isft_spirv_to_msl($0.baseAddress, $0.count, entryPoint, stage.cStage, &msl, &error) }
+        guard ok, let msl else { return CommandResult(status: 1, stderr: error.map { String(cString: $0) } ?? "") }
+        try String(cString: msl).write(toFile: output, atomically: true, encoding: .utf8)
+        return CommandResult(status: 0)
     }
 
     public func reflect(spirv: String) throws -> CommandResult {
-        try runner.run(spirvCross, [spirv, "--reflect"], stdin: nil)
+        let words = try Self.words(at: spirv)
+        var json: UnsafeMutablePointer<CChar>?
+        var error: UnsafeMutablePointer<CChar>?
+        defer { isft_free(json); isft_free(error) }
+        let ok = words.withUnsafeBufferPointer { isft_spirv_reflect($0.baseAddress, $0.count, &json, &error) }
+        guard ok, let json else { return CommandResult(status: 1, stderr: error.map { String(cString: $0) } ?? "") }
+        return CommandResult(status: 0, stdout: String(cString: json))
     }
 
-    /// Human-readable SPIR-V. glslang has no disassembler for an existing module, so this recompiles with `-H`.
     public func disassemble(_ source: String, stage: ShaderStage, output: String) throws -> CommandResult {
-        try runner.run(glslang, ["-G", "--amb", "--aml", "--stdin", "-S", stage.rawValue, "-H", "-o", output], stdin: source)
+        let (words, log) = Self.compile(source, stage: stage)
+        guard let words else { return CommandResult(status: 1, stdout: log) }
+        try Self.data(words).write(to: URL(fileURLWithPath: output))
+        let text = words.withUnsafeBufferPointer { isft_spirv_disassemble($0.baseAddress, $0.count) }
+        defer { isft_free(text) }
+        return CommandResult(status: 0, stdout: log + (text.map { String(cString: $0) } ?? ""))
     }
+
+    static func compile(_ source: String, stage: ShaderStage) -> ([UInt32]?, String) {
+        var words: UnsafeMutablePointer<UInt32>?
+        var count = 0
+        var log: UnsafeMutablePointer<CChar>?
+        defer { isft_free(words); isft_free(log) }
+        let ok = isft_glsl_to_spirv(source, stage.cStage, &words, &count, &log)
+        let text = log.map { String(cString: $0) } ?? ""
+        guard ok, let words else { return (nil, text) }
+        return (Array(UnsafeBufferPointer(start: words, count: count)), text)
+    }
+
+    static func data(_ words: [UInt32]) -> Data {
+        words.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    static func words(at path: String) throws -> [UInt32] {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return data.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
+    }
+}
+
+extension ShaderStage {
+    var cStage: ISFTStage { self == .vert ? ISFT_STAGE_VERTEX : ISFT_STAGE_FRAGMENT }
 }

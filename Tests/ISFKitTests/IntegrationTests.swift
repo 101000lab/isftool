@@ -2,16 +2,12 @@ import Foundation
 import Testing
 @testable import ISFKit
 
-let installedToolchain: Toolchain? = {
-    var env = ProcessInfo.processInfo.environment
-    env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin"
-    return try? Toolchain.locate(environment: env)
-}()
+import Metal
 
-/// Runs the real ISFGLSLGenerator, Homebrew glslang/spirv-cross and Metal.
-@Suite(.enabled(if: installedToolchain != nil, "glslang or spirv-cross not installed"))
+/// Runs the real ISFGLSLGenerator, the linked glslang and SPIRV-Cross, and Metal.
+@Suite(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "no Metal device"))
 final class IntegrationTests {
-    let toolchain = installedToolchain!
+    let toolchain: Toolchain = LinkedToolchain()
     let workDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("isftool-it-\(UUID().uuidString)")
 
     deinit {
@@ -22,15 +18,15 @@ final class IntegrationTests {
         Bundle.module.url(forResource: "Fixtures/\(name)", withExtension: nil)!.path
     }
 
-    func check(_ name: String, lint: Bool = true) throws -> CheckResult {
+    func check(_ name: String) throws -> CheckResult {
         let dir = workDirectory.appendingPathComponent(UUID().uuidString)
-        let checker = Checker(toolchain: toolchain, metal: try MetalLibraryCompiler(), options: CheckOptions(lint: lint))
+        let checker = Checker(toolchain: toolchain, metal: try MetalLibraryCompiler(), options: CheckOptions())
         return checker.check(path: fixture(name), workDirectory: dir)
     }
 
     /// Comments and whitespace differ between the generator output and the copy from VDMX's screen.
     func normalized(_ s: String) -> String {
-        Lint.stripComments(s).filter { !$0.isWhitespace }
+        s.replacingOccurrences(of: #"/\*[\s\S]*?\*/|//[^\n]*"#, with: "", options: .regularExpression).filter { !$0.isWhitespace }
     }
 
     // M1 condition 0
@@ -67,18 +63,12 @@ final class IntegrationTests {
         #expect(r.report.diagnostics.contains { $0.message.contains("unexpected LAYOUT") })
     }
 
-    // M1 condition 4
-    @Test func testVertexFunctionFailsLint() throws {
+    // M1 condition 4. Metal rejects it with the error VDMX shows (design 2.5).
+    @Test func testVertexFunctionFailsMetalLikeVDMX() throws {
         let r = try check("super_polygons_vertex.fs")
-        #expect(r.report.stage == .lint)
-        #expect(r.report.lint.first?.line == 54)
-    }
-
-    /// Records what Homebrew's toolchain does without the lint (design 2.5): SPIRV-Cross renames `vertex` and Metal accepts it.
-    @Test func testVertexFunctionPassesHomebrewToolchainWithoutLint() throws {
-        let r = try check("super_polygons_vertex.fs", lint: false)
-        #expect(r.report.ok, Comment(rawValue: CheckFormatter.format(r)))
-        #expect(r.artifacts.msl[.frag]?.contains("vertex0(") ?? false)
+        #expect(r.report.stage == .metal)
+        #expect(r.report.error?.contains("expected unqualified-id") ?? false, Comment(rawValue: CheckFormatter.format(r)))
+        #expect(r.artifacts.msl[.frag]?.contains("float2 vertex(") ?? false)
     }
 
     // M1 condition 7

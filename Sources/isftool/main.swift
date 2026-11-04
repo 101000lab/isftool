@@ -8,23 +8,17 @@ struct IsfTool: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "isftool",
         abstract: "Check, render and benchmark ISF shaders through the same GLSL to SPIR-V to Metal path as VDMX.",
-        version: isftoolVersion,
+        version: "\(isftoolVersion) (\(LinkedToolchain.versionSummary))",
         subcommands: [Check.self, Render.self, Bench.self, Info.self, Dump.self]
     )
 }
 
 struct ToolOptions: ParsableArguments {
-    @Option(name: .customLong("glslang"), help: "Path to glslang (default: from PATH).")
-    var glslang: String?
-
-    @Option(name: .customLong("spirv-cross"), help: "Path to spirv-cross (default: from PATH).")
-    var spirvCross: String?
-
     @Option(name: .customLong("keep-intermediates"), help: "Keep generated SPIR-V and MSL under this directory.")
     var keepIntermediates: String?
 
     func toolchain() throws -> Toolchain {
-        try Toolchain.locate(glslang: glslang, spirvCross: spirvCross)
+        LinkedToolchain()
     }
 
     /// Runs body with a work directory that is removed afterwards unless --keep-intermediates is set.
@@ -116,12 +110,9 @@ struct Check: ParsableCommand {
     @Flag(help: "Print JSON instead of text.")
     var json = false
 
-    @Flag(name: .customLong("no-lint"), help: "Skip the Metal keyword check.")
-    var noLint = false
-
     func run() throws {
         let paths = try list.resolve()
-        let checker = Checker(toolchain: try tools.toolchain(), metal: try MetalLibraryCompiler(), options: CheckOptions(lint: !noLint))
+        let checker = Checker(toolchain: try tools.toolchain(), metal: try MetalLibraryCompiler(), options: CheckOptions())
         var reports: [CheckReport] = []
         for path in paths {
             let result = tools.withWorkDirectory(for: path) { checker.check(path: path, workDirectory: $0) }
@@ -170,9 +161,6 @@ struct Render: ParsableCommand {
 
     @OptionGroup var levelOptions: LevelOptions
 
-    @Flag(name: .customLong("no-lint"), help: "Skip the Metal keyword check.")
-    var noLint = false
-
     @OptionGroup var tools: ToolOptions
 
     func validate() throws {
@@ -185,7 +173,7 @@ struct Render: ParsableCommand {
     func run() throws {
         let renderSize = try parseSize(size)
         // The renderer compiles the MSL itself, so check stops before Metal to avoid compiling twice.
-        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: renderSize), toolchain: try tools.toolchain(), metal: nil, options: CheckOptions(lint: !noLint, metal: false))
+        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: renderSize), toolchain: try tools.toolchain(), metal: nil, options: CheckOptions(metal: false))
         let result = tools.withWorkDirectory(for: shader) { checker.check(path: shader, workDirectory: $0) }
         guard result.report.ok, let document = result.artifacts.document else {
             print(CheckFormatter.format(result))
@@ -252,9 +240,6 @@ struct Bench: ParsableCommand {
     @Option(help: "Sort the table by median, p95 or shader.")
     var sort: BenchSort = .median
 
-    @Flag(name: .customLong("no-lint"), help: "Skip the Metal keyword check.")
-    var noLint = false
-
     @OptionGroup var tools: ToolOptions
 
     func resolvedModes() throws -> [LevelMode] {
@@ -282,7 +267,7 @@ struct Bench: ParsableCommand {
         let history = noCompare ? [] : store.load()
         let toolchain = try tools.toolchain()
         let options = BenchOptions(size: renderSize, fps: fps, warmup: warmup, frames: frames, repeats: `repeat`)
-        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: renderSize), toolchain: toolchain, metal: nil, options: CheckOptions(lint: !noLint, metal: false))
+        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: renderSize), toolchain: toolchain, metal: nil, options: CheckOptions(metal: false))
         var rows: [BenchRow] = []
         var failures: [BenchFailure] = []
         var measured: [BenchResult] = []
@@ -412,7 +397,7 @@ struct Dump: ParsableCommand {
 
     func run() throws {
         let toolchain = try tools.toolchain()
-        let checker = Checker(toolchain: toolchain, metal: nil, options: CheckOptions(lint: false, metal: false))
+        let checker = Checker(toolchain: toolchain, metal: nil, options: CheckOptions(metal: false))
         let output: String? = try tools.withWorkDirectory(for: shader) { dir in
             let result = checker.check(path: shader, workDirectory: dir)
             let a = result.artifacts

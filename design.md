@@ -3,15 +3,15 @@
 ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (GLSL 4.00 → SPIR-V → Metal) で検査し, 描画し, GPU 時間を測る macOS 用の CLI.
 この文書だけを読んで別セッションが実装を始められることを目指す. 既に手元で確かめたことは「検証済み」, 確かめていない推測は「未検証」と書き分ける.
 
-## 0. 現状 (2026-11-04)
+## 0. 現状 (2026-11-05)
 
 - M0 は完了. M1 は check, info, dump (`uniforms` を除く) を実装し, 完了条件 0 から 7 をテストか手元の実行で確かめた (9 章の M1 に結果を書いた). 未実装は `dump uniforms` と `~/Library/Caches/isftool/` の変換結果キャッシュ.
-- テストは `swift test`. Command Line Tools には XCTest が無いので swift-testing (`import Testing`) で書いた. ISFGLSLGenerator と Homebrew の glslang / spirv-cross と Metal を実際に通す統合テスト (`Tests/ISFKitTests/IntegrationTests.swift`) は, ツールが見つからなければ無効になる.
+- テストは `swift test`. Command Line Tools には XCTest が無いので swift-testing (`import Testing`) で書いた. ISFGLSLGenerator と組み込みの glslang / SPIRV-Cross と Metal を実際に通す統合テスト (`Tests/ISFKitTests/IntegrationTests.swift`) は, Metal のデバイスが無ければ無効になる.
 - M2 は `render` で 1 パスのシェーダーを PNG にするところまで実装し, preview と見比べた (9 章の M2).
 - M3 は複数パス, 持続バッファ, IMPORTED 画像を描けるようにし, `--frames` を足した (9 章の M3).
 - M4 は `bench` と 6 章の Level モードを実装し, `render` にも `--levels`, `--recording`, `--level-pattern` を足した (9 章の M4). 完了条件は 4 つとも満たした (4 は例のシェーダーを差し替えた). `--images` はまだ無い.
 - M5 は README を足し, Use 済みシェーダーを全部測るスクリプトは vjcomponents の `tools/bench_used.py` に置いた (9 章の M5). isftool は vjcomponents に依存しない.
-- このマシンには Homebrew で glslang と spirv-cross を入れた (2.).
+- glslang と SPIRV-Cross は, VDMX6 Plus 6.1.3.6 が同梱する版と同じ upstream のコミットを submodule にして組み込んだ (2.6). Homebrew の glslang と spirv-cross は要らなくなった.
 - 4 章の変換経路は一時ディレクトリで試しただけで, ファイルは残していない.
 - VDMX が使っているとみられる VIDVOX の公開実装を見つけ, ソースを読んだ (2.5). GLSL の組み立ては自前で書かず, その実装 (ISFGLSLGenerator) を組み込む方針に変えた. 3 章の写しは, その実装と VDMX が一致することの証拠として残している.
 - 決めたことと分かったことは全てこの文書にある. 実装中に新しく分かったことは, この文書の該当箇所を「検証済み」に書き換えていく.
@@ -33,11 +33,11 @@ ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (G
 | マシン | Apple M4 Pro, Metal 3 |
 | OS | macOS 15 (Darwin 24.6, arm64) |
 | Swift | 6.1.2. Xcode は無く Command Line Tools のみ (`/Library/Developer/CommandLineTools`) |
-| glslang | 16.6.0 (`/opt/homebrew/bin/glslang`, 別名 `glslangValidator`) |
-| spirv-cross | 1.4.363.0 (`/opt/homebrew/bin/spirv-cross`) |
+| glslang | 14.3.0 (`Vendor/glslang`, upstream の `8590f62c`). 組み込み (2.6) |
+| SPIRV-Cross | `Vendor/SPIRV-Cross`, upstream の `66363ac7`. 組み込み (2.6) |
 
 - Metal の実行時コンパイル `MTLDevice.makeLibrary(source:options:)` は Command Line Tools だけで動く (検証済み. swiftc で作った小さな実行ファイルで MSL をコンパイルできた).
-- glslang と spirv-cross は外部コマンドとして呼ぶ. ライブラリとしてリンクはしない (SwiftPM でビルドを単純に保つため). パスは `--glslang` `--spirv-cross` で上書きでき, 既定は `PATH` から探す.
+- glslang と SPIRV-Cross はライブラリとして isftool に静的にリンクする (2.6). M4 までは Homebrew の版を外部コマンドとして呼んでいた.
 
 ## 2.5 VIDVOX の公開実装 (検証済み, 2026-11-04 にソースを読んだ)
 
@@ -74,7 +74,21 @@ VDMX6 がこれ (かその社内版) を使っていると判断した根拠.
 
 M1 で確かめた結果 (検証済み). 本物の super_polygons (修正前) も, 字句検査を外すと Homebrew の SPIRV-Cross が `vertex0` に改名し, Metal でもコンパイルできた. 字句検査を入れると `stage: lint` で失敗する (統合テストに両方を残した). VDMX で落ちた理由は SPIRV-Cross の版の違いだった (2026-11-04, 検証済み). VDMX と同じ同梱の dylib (10 章) を使い捨てのプログラムから呼ぶと, 同じ GLSL から `vertex` を改名しない MSL が出て, Metal が VDMX と同じ `expected unqualified-id` で落とした. 違いは `vertex` の 5 行だけだった. 同じ比べ方で vjcomponents の 162 本, rejected の 237 本, テストのフィクスチャ 11 本のうち, glslang を通る 408 本の fragment の MSL を比べると, この 1 本以外は 1 文字も違わなかった. `layout` を使う 2 本は, 同梱の glslang でも Homebrew と同じく構文エラーになった.
 
-ISFMSLKit の `extern/` には, VIDVOX がビルドした glslang と SPIRV-Cross の dylib (arm64 と x86_64, macOS 15 以上) が同梱されている. これを呼べば VDMX と同じ版で変換できるが, このセッションでは外部のビルド済みバイナリの実行が権限確認で止められたので試していない. 使うかどうかはユーザーの判断待ち (10 章).
+ISFMSLKit の `extern/` には, VIDVOX がビルドした glslang と SPIRV-Cross の dylib (arm64 と x86_64, macOS 15 以上) が同梱されている. VDMX6 Plus 6.1.3.6 はこれと同じものを載せている (10 章). 配布物には使わず, 組み込んだ版 (2.6) の出力を確かめる基準にだけ使った.
+
+
+## 2.6 glslang と SPIRV-Cross の組み込み (検証済み, 2026-11-05)
+
+- fork は upstream のコミットに CLI のラッパーを足しただけだった. SPIRV-Cross の `SPIRVCrossLib` ブランチは upstream の `66363ac7` (2024-07-30) に `SPIRVCrossLib.cpp` などのファイルを足しただけで, 既存のソースには手を入れていない. glslang の `GLSLangValidatorLib` ブランチは upstream の `8590f62c` (2024-07-30, 版は 14.3.0) にラッパーを足し, ビルドの設定で `ENABLE_OPT` を切っている (spirv-opt を使わない). bundled の dylib の `glslang::GetVersion()` も 14.3.0 を返した.
+- isftool は upstream のこの 2 つのコミットを `Vendor/glslang` と `Vendor/SPIRV-Cross` に submodule で置き, SwiftPM の C++ target (`CGLSLang`, `CSPIRVCross`) としてビルドする. fork のコードは使わない (ライセンスの出どころを upstream だけにするためと, ラッパーの作りのため).
+- fork のラッパーは CLI の `main()` に引数の配列を渡し, 標準出力をプロセスごと差し替えて読む. グローバルな状態を持つのでロックで 1 本ずつしか通らず, 差し替え中は isftool 自身の出力も奪われる. そこで `Sources/CToolchain` に C の API を置き, 次のように呼ぶ.
+  - glslang は `StandAlone.cpp` の `CompileAndLinkShaderUnits` が `-G --amb --aml --stdin -S <stage>` で通る道を, 同じ順で API に写した (`glslang.cpp`). 入力の名前は `stdin` にするので, エラーは VDMX と同じ `ERROR: stdin:<行>:` になる. ログはラッパーと同じく, CLI が標準出力に出すもの (ファイル名の行を除く) にする.
+  - SPIRV-Cross は CLI の `main.cpp` を翻訳単位ごと取り込み, `compile_iteration` を `--rename-entry-point main <名前> <stage> --msl` と同じ引数で呼ぶ (`spirv_cross.cpp`). CLI は引数の既定値から CompilerMSL の設定を数十個決めるので, 写さずに CLI のコードをそのまま使う.
+  - CMake が作る `glslang/build_info.h` (14.3.0) と `glslang/glsl_intrinsic_header.h` は `Sources/CToolchain/generated/` に置いた.
+- 確かめたこと. vjcomponents の全シェーダー (rejected を含む) とテストのフィクスチャを, isftool と bundled の dylib (使い捨てのプログラムから呼んだ) の両方に通し, vert と frag の 816 の stage で SPIR-V と MSL が 1 バイトまで一致した. `layout` を使う 2 本はどちらも glslang で同じエラーになった. テストは並列に流しても通る.
+- 効果. 162 本の check がデバッグビルドで約 3 秒になった (外部コマンドでは 1 本に約 0.3 秒かかっていた). `vertex` を持つ super_polygons (修正前) は Metal の段で VDMX と同じ `expected unqualified-id` になる.
+- `--glslang` と `--spirv-cross` は消した. `isftool --version` は組み込んだ版と, 合わせた VDMX の版 (VDMX6 Plus 6.1.3.6) を出す.
+- 字句検査 (`stage: lint`, `--no-lint`) は外した (2026-11-05, ユーザーの判断). Homebrew の版との違いを補うために入れたものだった. 同じ版を組み込んだ今は Metal が VDMX と同じものを落とすので, 字句検査が落とせるのは Metal を通ったシェーダー, つまり VDMX でも動くシェーダーだけになる.
 
 ## 3. VDMX が組み立てる GLSL (検証済みの写し)
 
@@ -202,7 +216,7 @@ spirv-cross frag.spv --reflect                          # JSON. 調べるとき�
 - 頂点の入力は `VERTEXDATA [[attribute(0)]]`.
 - 予約語の再現.
   - 変数名 `layout`: glslang で `syntax error, unexpected LAYOUT, expecting COMMA or SEMICOLON`. VDMX と同じ文言 (検証済み).
-  - 関数名 `vertex`: 自作の小さなシェーダーでは, Homebrew の spirv-cross が VIDVOX と同じ引数でも `vertex0` に改名して, Metal でも通ってしまった. VDMX で落ちたのは, VDMX の古い SPIRV-Cross が `vertex` を改名しないため (2.5). Metal の予約語は isftool が自前で字句検査する (7.2).
+  - 関数名 `vertex`: 自作の小さなシェーダーでは, Homebrew の spirv-cross が VIDVOX と同じ引数でも `vertex0` に改名して, Metal でも通ってしまった. VDMX で落ちたのは, VDMX の古い SPIRV-Cross が `vertex` を改名しないため (2.5). 組み込んだ同じ版の SPIRV-Cross も改名しないので, isftool も Metal の段で同じく落とす (2.6).
 
 ## 5. CLI 仕様
 
@@ -243,7 +257,6 @@ isftool --version
 
 | オプション | 既定 | 意味 |
 |---|---|---|
-| `--glslang PATH` / `--spirv-cross PATH` | `PATH` から探す | 外部コマンド |
 | `--keep-intermediates DIR` | なし | 生成した GLSL, SPIR-V, MSL を保存する (デバッグ用) |
 | `--from FILE` | なし | シェーダーのパスを 1 行 1 本で読む (`-` で標準入力) |
 
@@ -314,8 +327,7 @@ GPU コストは入力の値で変わる. Level が 0 (無音または未割り�
 3. spirv-cross で MSL へ (引数は 2.5 と同じ. 関数名は `VV<ファイル名>VertFunc` / `VV<ファイル名>FragFunc`). 失敗したら `stage: spirv-cross`.
 4. `makeLibrary(source:)` で Metal へ. 失敗したら `stage: metal`.
 5. 解決できない uniform の検査 (`stage: unbound`). MSL の関数の引数のうち, ISF のホストが値を渡せないもの (シェーダー本体が自分で宣言した `uniform` など) があれば失敗にする. ISFMSLKit の `ISFMSLFindUnboundArgs` と同じ判定にする.
-6. 字句検査 (`stage: lint`). spirv-cross が黙って改名してしまう名前を, 元の .fs の識別子から探す. 一覧は少なくとも `vertex fragment kernel device constant thread threadgroup threadgroup_imageblock half ray_data object mesh stage_in`. 関数名, 変数名, 入力名のどれでも警告ではなく失敗にする (VDMX で実際に失敗したため). 今の実装は .fs (メタデータと本体) だけを見る. `.vs` を持つシェーダーは vjcomponents に無いので, `.vs` の検査は後回しにした.
-7. 各段の所要時間 (ms) も出す. VDMX でクリップを読み込むときの重さの目安になる.
+6. 各段の所要時間 (ms) も出す. VDMX でクリップを読み込むときの重さの目安になる.
 
 ### 7.3 描画 (Metal)
 
@@ -396,9 +408,8 @@ isftool/
 │  ├─ ISFGLSLBridge/             # C++ ターゲット. 下の C 関数を extern "C" で公開する薄い層
 │  └─ ISFKit/                    # Swift ライブラリ. 他から再利用できるように分ける
 │     ├─ ISFDocument.swift       # ISFGLSLBridge を包む. 入力, パス, 画像, 生成した GLSL, オフセット
-│     ├─ Toolchain.swift         # glslang / spirv-cross の呼び出し (2.5 の引数)
+│     ├─ Toolchain.swift         # 組み込んだ glslang / SPIRV-Cross の呼び出し (2.6)
 │     ├─ MSLSignature.swift      # MSL の関数の宣言から引数の番号を読む (ISFMSLParseFuncSignature 相当) と unbound の検査
-│     ├─ Lint.swift              # 7.2 の字句検査
 │     ├─ UniformBuffer.swift     # オフセットに従って値を詰める
 │     ├─ MetalRenderer.swift     # パイプライン, パス, 持続バッファ, 画像, 出力
 │     ├─ InputDriver.swift       # 6 章のモード, 録音の読み込み, --set
@@ -442,7 +453,7 @@ isftool/
 - ISFGLSLGenerator を submodule で入れ, `CISFGLSLGenerator` と `ISFGLSLBridge` がビルドできる.
 
 ### M1: check
-- ISFGLSLGenerator で GLSL を作り, 4 章の経路で Metal までコンパイルする. 7.2 の unbound 検査と字句検査も入れる.
+- ISFGLSLGenerator で GLSL を作り, 4 章の経路で Metal までコンパイルする. 7.2 の unbound 検査も入れる (字句検査も入れたが, 2.6 で外した).
 - 完了条件.
   0. vjcomponents の line_space の修正前の版 (下の 2.) で `dump glsl-frag` した出力が, 3 章の写し (VDMX のエラー画面) と空白を除いて一致する. ISFGLSLGenerator の組み込みが VDMX と同じものを出す証拠になる.
   1. vjcomponents の `isfs/lines/line_space.fs` (現在の版) が全段成功.
@@ -497,10 +508,7 @@ isftool/
 
 ## 10. 未決事項とリスク
 
-- **glslang と SPIRV-Cross の版の違い**. isftool は Homebrew の版を使うが, VDMX は VIDVOX の fork の古い版を使う (検証済み. VDMX6 Plus 6.1.3.6 の `ISFMSLKit.framework/Versions/A/Frameworks/` にある `libGLSLangValidatorLib.dylib` と `libSPIRVCrossLib.dylib` は, ISFMSLKit の `extern/` にあるものと arm64 の `__TEXT,__text` が一致した. ファイル全体が違うのはコード署名の差. upstream の glslang や SPIRV-Cross を直に使ってはいない). fork は CLI をライブラリとして呼べるようにし, CLI の `main()` に引数を渡す関数を足しただけの薄いもの (ISFMSLKit の README). 変換の処理に手が入っているかは, fork を upstream と diff していないので確かめていない. ISFMSLKit の `extern/` にある SPIRV-Cross の dylib は `sdk-1.3.239.0-406-gfbff56a2` (2025-03-19 にビルド) で, Homebrew の 1.4.363.0 より古い. glslang の dylib は文字列から版が読み取れなかった. 版の違いで出力が変わったのは, 今のところ `vertex` の改名だけ (2.5). `vertex` のように結果が変わる例がある (2.5). 対策の候補は 3 つで, ユーザーの判断待ち.
-  1. Homebrew の版を使い, 違いは字句検査で補う (今の方針で, M0 はこれで始める. 2 と 3 は後から差し替えられ, 構成は変わらない).
-  2. VIDVOX の fork (`mrRay/glslang` の `GLSLangValidatorLib` ブランチ, `mrRay/SPIRV-Cross` の `SPIRVCrossLib` ブランチ) をソースからビルドして使う. VDMX に最も近いが, ビルドが重い.
-  3. ISFMSLKit の `extern/` に同梱されたビルド済みの dylib を呼ぶ. 手軽だが, 外部のビルド済みバイナリを実行することになる. ISFMSLKit のライセンスは GitHub 上で判定されていない (NOASSERTION) ので, 配布するなら確認が要る.
+- **glslang と SPIRV-Cross の版の違い** (解決済み, 2026-11-05). VDMX は VIDVOX の fork の古い版を使う (検証済み. VDMX6 Plus 6.1.3.6 の `ISFMSLKit.framework/Versions/A/Frameworks/` にある `libGLSLangValidatorLib.dylib` と `libSPIRVCrossLib.dylib` は, ISFMSLKit の `extern/` にあるものと arm64 の `__TEXT,__text` が一致した. ファイル全体が違うのはコード署名の差. upstream の glslang や SPIRV-Cross を直に使ってはいない). fork は CLI をライブラリとして呼べるようにし, CLI の `main()` に引数を渡す関数を足しただけの薄いもの (ISFMSLKit の README). upstream と diff すると, 変換の処理には手が入っていなかった (2.6). ISFMSLKit の `extern/` にある SPIRV-Cross の dylib は `sdk-1.3.239.0-406-gfbff56a2` (2025-03-19 にビルド) で, Homebrew の 1.4.363.0 より古い. glslang の dylib は文字列から版が読み取れなかった. VDMX と同じ版を組み込むことにした (ユーザーの判断. 2.6). VDMX が glslang や SPIRV-Cross を差し替えたら, 2.6 の比べ方をやり直す.
 - VDMX6 が使っているのが公開版の ISFMSLKit そのものかは分からない (社内で手を入れている可能性がある). VDMX で落ちて isftool で通るシェーダーが見つかったら, エラー画面の GLSL を 3 章に追記し, check のテストに足す.
 - `audio` / `audioFFT` 入力に VDMX が渡すテクスチャの形 (幅, 高さ, 形式) は分かっていない. ISFMSLKit は値が無いとき 64x64 の空のテクスチャを渡すだけで, 音声を詰める処理は VDMX 側にある. GPU 時間への影響は小さいとみて, 空のテクスチャで測る.
 - GPU 時間は VDMX の出力 fps と一致しない (VDMX は合成, レイヤー FX, Syphon 出力も描く). 順位付けと前後比較に使う.

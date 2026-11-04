@@ -20,16 +20,11 @@ jobs:
         with:
           submodules: true
 
-      - name: Install glslang and spirv-cross
-        run: brew install glslang spirv-cross
-
       - name: Show toolchain
         run: |
           sw_vers
           xcode-select -p
           swift --version
-          glslang --version
-          spirv-cross --revision
 
       - name: Build
         run: swift build
