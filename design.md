@@ -5,7 +5,9 @@ ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (G
 
 ## 0. 現状 (2026-11-04)
 
-- 実装はまだ何も無い. M0 から始める.
+- M0 は完了. M1 は check, info, dump (`uniforms` を除く) を実装し, 完了条件 0 から 7 をテストか手元の実行で確かめた (9 章の M1 に結果を書いた). 未実装は `dump uniforms` と `~/Library/Caches/isftool/` の変換結果キャッシュ.
+- テストは `swift test`. Command Line Tools には XCTest が無いので swift-testing (`import Testing`) で書いた. ISFGLSLGenerator と Homebrew の glslang / spirv-cross と Metal を実際に通す統合テスト (`Tests/ISFKitTests/IntegrationTests.swift`) は, ツールが見つからなければ無効になる.
+- 次は M2.
 - このマシンには Homebrew で glslang と spirv-cross を入れた (2.).
 - 4 章の変換経路は一時ディレクトリで試しただけで, ファイルは残していない.
 - VDMX が使っているとみられる VIDVOX の公開実装を見つけ, ソースを読んだ (2.5). GLSL の組み立ては自前で書かず, その実装 (ISFGLSLGenerator) を組み込む方針に変えた. 3 章の写しは, その実装と VDMX が一致することの証拠として残している.
@@ -58,6 +60,7 @@ VDMX6 がこれ (かその社内版) を使っていると判断した根拠.
 - **関数名**: `VV<ファイル名>VertFunc` と `VV<ファイル名>FragFunc`. ファイル名 (拡張子なし) の英数字以外は `_` に置き換える (`ISFMSLFuncSignature.mm` の `ISFMSLEntryPointNamesForPath`).
 - **解決できない uniform の検査**: シェーダー本体が自分で `uniform` を宣言すると, ホストが値を渡せない引数が MSL に残る. ISFMSLKit はこれを失敗として扱う (`ISFMSLFindUnboundArgs`). isftool の check でも同じ検査をする.
 - **uniform の詰め方**: 先頭に `ISFShaderRenderInfo` (48 バイト. `PASSINDEX TIME RENDERSIZE[2] DATE[4] TIMEDELTA FRAMEINDEX PADDING_INFO[2]`), 画像ごとに `ISFShaderImgInfo` (32 バイト. `rect[4] size[2] flip PADDING_IMG`), 入力の値が続く. 各入力と各バッファのオフセットは `generateShaderSource` が `offsetInBuffer()` に書き込み, 全体の大きさを返す (`VVISF_Base.hpp`, `ISFAttr.hpp`, `ISFPassTarget.hpp`). ISFMSLKit はこの大きさを 48 の倍数に切り上げたバッファをパスごとに `newBufferWithBytes` で作り, 頂点とフラグメントの両方に渡す.
+  - 実装して分かったこと (検証済み). `offsetInBuffer()` は `ISFShaderRenderInfo` の後ろからの相対値で, ISFMSLScene は `sizeof(ISFShaderRenderInfo)` を足した位置に書く. 値は `generateShaderSource` ではなく ISFDoc を作ったときに決まる. UBO モードの `generateShaderSource` が `outUBOSize` に返すのは 48 のままで使えないので, ISFMSLKit と同じく `getMaxUBOSize()` を使う. 切り上げは `maxUBOSize + (48 - maxUBOSize % 48)` で, ちょうど 48 の倍数でも 1 ブロック足される (line_space は 104 バイトで, バッファは 144 バイト).
 - **`_X_flip`**: 普通のテクスチャで 1. コメントは「GLSL は左下原点で読むが Metal は左上原点なので, ここで反転する」(`ISFMSLScene.mm`). `rect` はテクスチャの中の使う範囲を正規化した値, `size` はその範囲のピクセル数.
 - **パスのテクスチャ**: 8 bit は `BGRA8`, `FLOAT` は RGBA の float (`VVMTLPool` の `bgra8TexSized` と `rgbaFloatTexSized`). パスの大きさが変わったら作り直す.
 - **ロードアクション**: カスタムの頂点シェーダーがあるときだけクリア, それ以外は `DontCare`. つまり持続でないバッファの初期内容は保証されない.
@@ -65,6 +68,8 @@ VDMX6 がこれ (かその社内版) を使っていると判断した根拠.
 - **頂点データ**: 解像度ごとに作った四角形のバッファを, 頂点関数が使う最大のバッファ番号 + 1 の番号に置く.
 
 手元の Homebrew 版で, 上の glslang と SPIRV-Cross の引数をそのまま使って line_space を変換し, Metal でコンパイルできた (検証済み). 関数名 `vertex` を持つ自作の小さなシェーダーは, それでも Homebrew の SPIRV-Cross が `vertex0` に改名して通った. 一方 VDMX では `vec2 vertex(float column, float row)` を持つ super_polygons が `expected unqualified-id` で落ちた (vjcomponents の `5d195dd` で修正). 理由は分かっていない. VIDVOX の SPIRV-Cross の版の違いかもしれないが, SPIRV-Cross は以前から MSL の予約語を改名しているので, 版の違いだけとは言い切れない. 本物の super_polygons (修正前) を M1 で isftool に通して確かめる. どちらの結果でも, Metal の予約語は isftool が自前で検査する (7.2).
+
+M1 で確かめた結果 (検証済み). 本物の super_polygons (修正前) も, 字句検査を外すと Homebrew の SPIRV-Cross が `vertex0` に改名し, Metal でもコンパイルできた. 字句検査を入れると `stage: lint` で失敗する (統合テストに両方を残した). VDMX で落ちた理由は依然として分からない.
 
 ISFMSLKit の `extern/` には, VIDVOX がビルドした glslang と SPIRV-Cross の dylib (arm64 と x86_64, macOS 15 以上) が同梱されている. これを呼べば VDMX と同じ版で変換できるが, このセッションでは外部のビルド済みバイナリの実行が権限確認で止められたので試していない. 使うかどうかはユーザーの判断待ち (10 章).
 
@@ -189,7 +194,8 @@ spirv-cross frag.spv --reflect                          # JSON. 調べるとき�
 - 頂点とフラグメントは別々にコンパイルする (VIDVOX も段ごとに別の関数).
 - `--msl-decoration-binding` を付けないと, Metal の引数の番号は SPIRV-Cross が段ごと, 資源の種類ごとに 0 から振り直す. 例えばフラグメントは `constant VVISF_UNIFORMS& [[buffer(0)]]`, `texture2d<float> lineState [[texture(0)]]`, `sampler lineStateSmplr [[sampler(0)]]` になった. 同じシェーダーを `--msl-decoration-binding` 付きで変換したときは uniform が `[[buffer(1)]]` だった.
 - **よって Metal の引数の番号は, 生成された MSL の関数の宣言を文字列解析して名前ごとに読む** (ISFMSLKit の `ISFMSLParseFuncSignature` と同じ). `--reflect` の `binding` は glslang が振った SPIR-V の番号で, VIDVOX の引数で変換した MSL の番号とは一致しない. `--reflect` を番号に使うと, エラーにならないまま別の場所に値が入り, 絵が壊れる. `--reflect` はオフセットの確認とデバッグにだけ使う. テクスチャが複数ある (持続バッファ, IMPORTED, image 入力) シェーダーでは, 名前ごとの解析で並び順が決まる.
-- `bool` は 4 バイトの `uint` になる. uniform の値の位置は ISFGLSLGenerator のオフセットを使う. 念のため `--reflect` のオフセットと一致するかを M1 のテストで確かめる.
+- `bool` は 4 バイトの `uint` になる. uniform の値の位置は ISFGLSLGenerator のオフセットを使う. `--reflect` のオフセットが `48 + offsetInBuffer()` と一致することを line_space で確かめ, 統合テストに残した (検証済み).
+- glslang に `--stdin` で渡すと, エラーは標準出力に `ERROR: stdin:111: ...` の形で出る. この番号は VDMX のエラー画面と同じ (line_space の修正前の版で 111). `-H` (SPIR-V の逆アセンブル) は `-G` と併用でき, 一覧は標準出力に, 入力名の `stdin` は標準エラーに出る (検証済み).
 - 頂点の入力は `VERTEXDATA [[attribute(0)]]`.
 - 予約語の再現.
   - 変数名 `layout`: glslang で `syntax error, unexpected LAYOUT, expecting COMMA or SEMICOLON`. VDMX と同じ文言 (検証済み).
@@ -301,7 +307,7 @@ GPU コストは入力の値で変わる. Level が 0 (無音または未割り�
 3. spirv-cross で MSL へ (引数は 2.5 と同じ. 関数名は `VV<ファイル名>VertFunc` / `VV<ファイル名>FragFunc`). 失敗したら `stage: spirv-cross`.
 4. `makeLibrary(source:)` で Metal へ. 失敗したら `stage: metal`.
 5. 解決できない uniform の検査 (`stage: unbound`). MSL の関数の引数のうち, ISF のホストが値を渡せないもの (シェーダー本体が自分で宣言した `uniform` など) があれば失敗にする. ISFMSLKit の `ISFMSLFindUnboundArgs` と同じ判定にする.
-6. 字句検査 (`stage: lint`). spirv-cross が黙って改名してしまう名前を, 元の .fs の識別子から探す. 一覧は少なくとも `vertex fragment kernel device constant thread threadgroup threadgroup_imageblock half ray_data object mesh visible stage_in`. 関数名, 変数名, 入力名のどれでも警告ではなく失敗にする (VDMX で実際に失敗したため).
+6. 字句検査 (`stage: lint`). spirv-cross が黙って改名してしまう名前を, 元の .fs の識別子から探す. 一覧は少なくとも `vertex fragment kernel device constant thread threadgroup threadgroup_imageblock half ray_data object mesh stage_in`. 関数名, 変数名, 入力名のどれでも警告ではなく失敗にする (VDMX で実際に失敗したため). 今の実装は .fs (メタデータと本体) だけを見る. `.vs` を持つシェーダーは vjcomponents に無いので, `.vs` の検査は後回しにした.
 7. 各段の所要時間 (ms) も出す. VDMX でクリップを読み込むときの重さの目安になる.
 
 ### 7.3 描画 (Metal)
@@ -383,7 +389,8 @@ isftool/
 
 - ビルドは `swift build -c release`. 実行ファイルは `.build/release/isftool`.
 - ISFGLSLGenerator は C++ (C++17 以上, exprtk と nlohmann json をヘッダーで含む). Swift から直接 C++ を呼ぶ (C++ 相互運用) より, `ISFGLSLBridge` で必要な操作だけを C の関数にして呼ぶほうが壊れにくい. 例: 文書を開く / 閉じる, GLSL を作る (頂点とフラグメントの文字列, UBO の大きさ), 入力とパスと画像の一覧と各オフセット, パスの大きさの評価, エラー文字列. exprtk はコンパイルが重いので, リリースビルドの時間に注意する.
-- ISFGLSLGenerator のビルドに使うコンパイルフラグは, ISFMSLKit の `ISFGLSLGenerator_build_script.sh` と ISFGLSLGenerator の `CMakeLists.txt` を参考にする.
+- ISFGLSLGenerator のビルドに使うコンパイルフラグは, ISFMSLKit の `ISFGLSLGenerator_build_script.sh` と ISFGLSLGenerator の `CMakeLists.txt` を参考にする. 実際に要ったのは C++20 (`cxx_std_20`) と `MAC=1` の定義 (トップの `CMakeLists.txt` が定義する. 無いと `GetHomeDirectory` がコンパイルできない). リリースビルドは全体で約 30 秒 (検証済み).
+- `ISFGLSLBridge` は ISFDoc の中身を JSON (同梱の nlohmann json) で 1 回に渡す. Swift 側はそれを `ISFDocumentInfo` に読み, 以降の処理は全てこの値を受け取る. テストでは C++ を通さずに値を手で作れる.
 - SwiftPM のターゲットは submodule をそのまま指せる. 例:
 
 ```swift
@@ -424,6 +431,12 @@ isftool/
   7. `--reflect` で得た `VVISF_UNIFORMS` のオフセットが, ISFGLSLGenerator の `offsetInBuffer()` と一致する (数本で確かめてテストに残す).
 
 - `info` と `dump` も M1 で作る (check の生成物をそのまま出すだけなので). 完了条件: `dump glsl-frag` の出力が 3 章の形と一致する.
+- 結果 (2026-11-04).
+  - 0: 3 章の写し (`Tests/ISFKitTests/Fixtures/vdmx_line_space.*.glsl`) と, コメントと空白を除いて一致した. 生成物には 3.1 に無いコメント行 (`//mat4 projectionMatrix ...`) があるが, エラー画面の写しを整えたときに落ちたものとみなした.
+  - 1 から 4, 6, 7: 統合テストで確かめた. 2 は生成 GLSL の 111 行目, 元の .fs の 90 行目. 3 は入力名がブロックのメンバーになるので頂点シェーダーで先に落ちる (生成 GLSL の 21 行目. 元の .fs の行は無い).
+  - 5: rejected を除く 162 本のうち 159 本が成功, 3 本が失敗.
+    - `depth/nested_frames_3d.fs`: `stage: metal`. 関数名 `level` が Metal の `metal::level` とぶつかる (`reference to 'level' is ambiguous`). Homebrew の SPIRV-Cross は `level` を改名しない. VDMX でも同じエラー (`reference to 'level' is ambiguous`, 同じ行番号) で読み込めなかった. VDMX が出した MSL は isftool の `dump msl-frag` と行番号まで一致した.
+    - `lines/structure.fs` と `signal/ridge_lines.fs`: `stage: lint`. 変数名 `visible`. SPIRV-Cross は改名せず, Metal もコンパイルできた. VDMX では 2 本ともエラーにならなかった. そこで `visible` を字句検査の一覧から外した. `level` は Metal の段で VDMX と同じエラーになるので一覧に足さない. 外した後は 162 本のうち 161 本が成功する.
 
 ### M2: 1 パスの描画
 - 1 パスのシェーダーを `render` で PNG にする.
