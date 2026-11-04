@@ -1,0 +1,3 @@
+[submodule "Vendor/ISFGLSLGenerator"]
+	path = Vendor/ISFGLSLGenerator
+	url = https://github.com/mrRay/ISFGLSLGenerator
