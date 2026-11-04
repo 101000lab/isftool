@@ -221,13 +221,15 @@ spirv-cross frag.spv --reflect                          # JSON. 調べるとき�
 ## 5. CLI 仕様
 
 ```
-isftool check  <shader.fs>... [--json]
+isftool check  <shader.fs> [--json]
 isftool render <shader.fs> --out <dir|file.png> [--frames N] [--at SECONDS] [描画オプション]
-isftool bench  <shader.fs>... [描画オプション] [計測オプション]
+isftool bench  <shader.fs> [描画オプション] [計測オプション]
 isftool info   <shader.fs> [--size WxH]                 # 短い要約
 isftool dump   <shader.fs> <what> [--size WxH] [--set NAME=VALUE]...
 isftool --version
 ```
+
+どのサブコマンドもシェーダーは 1 本だけ受け取る. 何本も通すときは `xargs -n 1` などで 1 本ずつ呼ぶ (2026-11-05, ユーザーの判断. M4 までは `check` と `bench` が複数本と `--from` を受け付けたが, xargs と比べて利点がほとんど無かった). シェーダーをまたいだ順位は, 結果のファイル (7.5) から作る.
 
 `info` は画面に収まる要約だけを出す. 生成物の全文は `dump` で 1 つずつ標準出力に出す (数百行になるシェーダーもあり, まとめて出すと要約が流れて見えなくなるため).
 
@@ -258,7 +260,6 @@ isftool --version
 | オプション | 既定 | 意味 |
 |---|---|---|
 | `--keep-intermediates DIR` | なし | 生成した GLSL, SPIR-V, MSL を保存する (デバッグ用) |
-| `--from FILE` | なし | シェーダーのパスを 1 行 1 本で読む (`-` で標準入力) |
 
 描画オプション (render と bench).
 
@@ -279,7 +280,7 @@ isftool --version
 | `--warmup N` | `60` | 計測前に空回しするフレーム数 (持続バッファが溜まるまで) |
 | `--frames N` | `240` | 計測するフレーム数 |
 | `--repeat N` | `1` | 計測を何回繰り返して中央値を取るか |
-| `--modes LIST` | `default,max`. `--recording` があれば `default,recording,max` | 6 章のモードをカンマ区切りで. 1 本ずつ全モードを測る |
+| `--modes LIST` | `default,max`. `--recording` があれば `default,recording,max` | 6 章のモードをカンマ区切りで |
 | `--results FILE` | `.isftool/results.jsonl` | 結果を 1 行 1 計測で追記する |
 | `--compare` | on | 同じシェーダー, 同じ条件の前回の結果との差 (%) を表に出す |
 | `--json` | off | 表の代わりに JSON を標準出力に出す |
@@ -390,7 +391,7 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 ```
 
 - 前回比は, 同じ shader パス, size, mode, frames の直近の行と比べる. `sha256` が違えばシェーダーが変わったことが分かる.
-- `shader` はコマンドラインで渡したパスをそのまま入れる (`--from` の一覧を同じ場所から渡せば前回と比べられる. 別のディレクトリから相対パスで渡すと別のシェーダーとみなされる).
+- `shader` はコマンドラインで渡したパスをそのまま入れる (同じ場所から同じパスで渡せば前回と比べられる. 別のディレクトリから相対パスで渡すと別のシェーダーとみなされる).
 - 実装で足した項目. `passes` (パスの数) と, `--repeat` が 2 以上のとき `repeats` (回ごとの中央値). そのとき `ms.median` は回ごとの中央値の中央値.
 - 結果は 1 本 1 モード測るたびに追記する (長い一括計測が途中で止まっても, それまでの結果が残る). 失敗したシェーダーは結果ファイルに書かず, 表と `--json` の `failures` にだけ出す.
 - `git` はシェーダーのあるリポジトリで `git rev-parse` と `git status --porcelain` を取る. リポジトリでなければ省く.
@@ -503,7 +504,7 @@ isftool/
 
 ### M5: 仕上げ
 - README (インストール, 例, 数字の読み方と限界).
-- vjcomponents の Use 済みシェーダーを全部測る例. Use 済みの一覧は vjcomponents の preview サーバーの `GET /__feedback` か `isfs/feedback.jsonl` (ファイル名ごとに最後の `use` / `unuse` / `reject` が効く) から作れる. isftool 本体はこの規則を知らなくてよい (`--from` で一覧を渡す).
+- vjcomponents の Use 済みシェーダーを全部測る例. Use 済みの一覧は vjcomponents の preview サーバーの `GET /__feedback` か `isfs/feedback.jsonl` (ファイル名ごとに最後の `use` / `unuse` / `reject` が効く) から作れる. isftool 本体はこの規則を知らなくてよい.
 - 結果 (2026-11-04). 一覧を作る規則は vjcomponents のものなので, スクリプトは vjcomponents の `tools/bench_used.py` に置き (ユーザーの判断), isftool の README からは vjcomponents の話を外した. スクリプトは `vj_controller.py` の `used_shaders` (ファイル名ごとに最後の判定が効き, フォルダーを移っても追える) で一覧を作り, リポジトリの直下から `isftool bench --from - --recording recordings/vdmx_mic.jsonl` を呼ぶ. 直下から呼ぶのは, パスを毎回同じにして前回と比べられるようにするため. Use 済みの 61 本を 1280x720, `--warmup 10 --frames 30` で 3 モード測って約 2.5 分, 全部成功した. 最も重いのは sine_attractors の max (42.84 ms) で, randomgravities と gravity_flow が続く.
 
 ## 10. 未決事項とリスク

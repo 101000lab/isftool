@@ -34,17 +34,19 @@ ISFGLSLGenerator, glslang and SPIRV-Cross are git submodules under `Vendor/`. If
 
 ### check
 
-Compiles shaders to Metal and reports the first stage that fails (`parse`, `glsl`, `spirv-cross`, `metal` or `unbound`, the last one for a Metal function argument the ISF host cannot fill, such as a `uniform` the shader declares itself). The exit code is 1 when any shader fails.
+Compiles a shader to Metal and reports the first stage that fails (`parse`, `glsl`, `spirv-cross`, `metal` or `unbound`, the last one for a Metal function argument the ISF host cannot fill, such as a `uniform` the shader declares itself). The exit code is 1 when the shader fails.
 
 ```sh
-isftool check isfs/**/*.fs
+isftool check isfs/lines/line_space.fs
 isftool check --json isfs/depth/nested_frames_3d.fs
 ```
 
 ```
-ok    isfs/lines/line_space.fs  (parse 1ms, glsl 174ms, spirv_cross 142ms, metal 2ms)
+ok    isfs/lines/line_space.fs  (parse 1ms, glsl 95ms, spirv_cross 6ms, metal 1ms)
 FAIL  isfs/depth/nested_frames_3d.fs  [metal frag] program_source:110:21: error: reference to 'level' is ambiguous
 ```
+
+To check many shaders, run it once per shader, for example `find isfs -name '*.fs' | xargs -n 1 isftool check`.
 
 ### render
 
@@ -59,18 +61,18 @@ With more than one frame, `--out` is a directory and the files are named `<shade
 
 ### bench
 
-Measures the GPU time of each frame and ranks the shaders, slowest first.
+Measures the GPU time of each frame of a shader, once per mode.
 
 ```sh
-isftool bench isfs/systems/*.fs --size 1280x720
-isftool bench --from list.txt --recording recordings/vdmx_mic.jsonl --repeat 3
+isftool bench isfs/systems/randomgravities.fs --size 1280x720
+isftool bench isfs/systems/randomgravities.fs --size 1280x720 --recording recordings/vdmx_mic.jsonl --repeat 3
 ```
 
 ```
     shader                           mode       median    p95  passes  vs prev  note
-!!  isfs/systems/randomgravities.fs  max         30.48  32.97       1
-!   isfs/depth/line_cloud_3d.fs      max         12.37  13.34       1
-    isfs/sprites/fullmoon.fs         max          0.15   0.16       1           audio: blank texture
+!!  isfs/systems/randomgravities.fs  default     26.66  30.07       1
+!!  isfs/systems/randomgravities.fs  recording   26.27  29.68       1
+!!  isfs/systems/randomgravities.fs  max         26.27  29.83       1
 ```
 
 Each shader is measured in every mode given by `--modes`. The default is `default,max`, plus `recording` when `--recording` is given.
@@ -115,10 +117,10 @@ isftool dump isfs/depth/nested_frames_3d.fs msl-frag
 
 ## Benchmarking a collection
 
-Pass the shaders with `--from`, one path per line, and run bench from the same directory every time so each run is compared with the previous one.
+Run bench once per shader, from the same directory every time so each run is compared with the previous one. Every result goes to `.isftool/results.jsonl`, so a ranking across shaders can be read from there.
 
 ```sh
-find isfs -name '*.fs' | isftool bench --from - --size 1280x720
+find isfs -name '*.fs' | xargs -n 1 isftool bench --size 1280x720
 ```
 
 A full run takes a while, since every shader is checked first and then drawn for `--warmup` plus `--frames` frames in each mode. Lower both for a quick ranking.

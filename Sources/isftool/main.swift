@@ -34,31 +34,6 @@ struct ToolOptions: ParsableArguments {
     }
 }
 
-struct ShaderList: ParsableArguments {
-    @Argument(help: "ISF fragment shaders (.fs).")
-    var shaders: [String] = []
-
-    @Option(name: .customLong("from"), help: "Read shader paths from a file, one per line (- for stdin).")
-    var from: String?
-
-    func resolve() throws -> [String] {
-        var paths = shaders
-        if let from {
-            let text: String
-            if from == "-" {
-                text = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
-            } else {
-                text = try String(contentsOfFile: from, encoding: .utf8)
-            }
-            paths += text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        }
-        if paths.isEmpty {
-            throw ValidationError("no shaders given")
-        }
-        return paths
-    }
-}
-
 struct LevelOptions: ParsableArguments {
     @Option(name: .customLong("recording"), help: "Recording of VDMX's Audio Analysis as JSON Lines of {t, address, value}. Enables the recording mode.")
     var recording: String?
@@ -102,34 +77,27 @@ func parseSize(_ text: String) throws -> RenderSize {
 }
 
 struct Check: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Compile shaders to Metal and report failures.")
+    static let configuration = CommandConfiguration(abstract: "Compile a shader to Metal and report where it fails.")
 
-    @OptionGroup var list: ShaderList
+    @Argument(help: "ISF fragment shader (.fs).")
+    var shader: String
+
     @OptionGroup var tools: ToolOptions
 
     @Flag(help: "Print JSON instead of text.")
     var json = false
 
     func run() throws {
-        let paths = try list.resolve()
         let checker = Checker(toolchain: try tools.toolchain(), metal: try MetalLibraryCompiler(), options: CheckOptions())
-        var reports: [CheckReport] = []
-        for path in paths {
-            let result = tools.withWorkDirectory(for: path) { checker.check(path: path, workDirectory: $0) }
-            reports.append(result.report)
-            if !json {
-                print(CheckFormatter.format(result))
-            }
-        }
+        let result = tools.withWorkDirectory(for: shader) { checker.check(path: shader, workDirectory: $0) }
         if json {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            print(String(decoding: try encoder.encode(reports), as: UTF8.self))
-        } else if paths.count > 1 {
-            let failed = reports.filter { !$0.ok }.count
-            print("\n\(paths.count - failed) ok, \(failed) failed")
+            print(String(decoding: try encoder.encode(result.report), as: UTF8.self))
+        } else {
+            print(CheckFormatter.format(result))
         }
-        if reports.contains(where: { !$0.ok }) {
+        if !result.report.ok {
             throw ExitCode.failure
         }
     }
@@ -204,9 +172,10 @@ struct Render: ParsableCommand {
 }
 
 struct Bench: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Measure the GPU time per frame of shaders and rank them.")
+    static let configuration = CommandConfiguration(abstract: "Measure the GPU time per frame of a shader in each mode.")
 
-    @OptionGroup var list: ShaderList
+    @Argument(help: "ISF fragment shader (.fs).")
+    var shader: String
 
     @Option(help: "Output size.")
     var size = "1920x1440"
@@ -272,70 +241,72 @@ struct Bench: ParsableCommand {
         var failures: [BenchFailure] = []
         var measured: [BenchResult] = []
 
-        for path in try list.resolve() {
-            func fail(_ message: String) {
-                failures.append(BenchFailure(shader: path, error: message))
-                rows.append(BenchRow(shader: path, mode: "-", note: message))
-                if !json { FileHandle.standardError.write(Data("FAIL  \(path)  \(message)\n".utf8)) }
+        let path = shader
+        func report() throws {
+            if json {
+                struct Output: Encodable { var results: [BenchResult]; var failures: [BenchFailure] }
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+                print(String(decoding: try encoder.encode(Output(results: measured, failures: failures)), as: UTF8.self))
+            } else {
+                print(BenchFormatter.format(BenchFormatter.sorted(rows, by: sort), compare: !noCompare))
             }
-            let check = tools.withWorkDirectory(for: path) { checker.check(path: path, workDirectory: $0) }
-            guard check.report.ok, let document = check.artifacts.document else {
-                fail("check failed at \(check.report.stage?.rawValue ?? "?"): \(check.report.error?.split(separator: "\n").first.map(String.init) ?? "")")
-                continue
-            }
-            let notes = BenchFormatter.notes(for: document)
-            let sha = BenchRunner.sha256(ofFile: path)
-            let git = GitInfo.of(path: path)
-            for mode in modes {
-                do {
-                    let driver = try levelOptions.driver(document: document, mode: mode, matcher: matcher, recording: recording)
-                    // A fresh renderer per mode, so persistent buffers start black and warmup fills them again.
-                    var metalMs: Double?
-                    var device = ""
-                    let times = try BenchRunner.measure(makeRenderer: {
-                        let start = DispatchTime.now()
-                        let renderer = try Renderer(artifacts: check.artifacts, sizer: try ISFPassSizer(path: path))
-                        // Only the first build counts. Later ones hit the OS's Metal cache and say nothing about VDMX.
-                        if metalMs == nil { metalMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000 }
-                        device = renderer.device.name
-                        return renderer
-                    }, driver: driver, options: options)
-                    guard let stats = Stats(times.flatMap { $0 }) else { continue }
-                    var ms = stats
-                    var repeats: [Double]?
-                    if `repeat` > 1 {
-                        repeats = times.map { Stats.median($0) }
-                        ms.median = Stats.median(repeats!)
-                    }
-                    let result = BenchResult(
-                        at: BenchRunner.iso8601(), shader: path, sha256: sha, git: git,
-                        size: [renderSize.width, renderSize.height], fps: fps, mode: mode,
-                        warmup: warmup, frames: frames, repeat: `repeat`, ms: ms, repeats: repeats,
-                        passes: max(document.passes.count, 1),
-                        compile_ms: .init(glsl: check.report.timings["glsl"] ?? 0, spirv_cross: check.report.timings["spirv_cross"] ?? 0, metal: metalMs ?? 0),
-                        device: device, isftool: isftoolVersion
-                    )
-                    // Written as soon as it is measured, so a long run that stops halfway keeps what it has.
-                    try store.append(result)
-                    measured.append(result)
-                    let previous = ResultsStore.previous(of: result, in: history)
-                    rows.append(BenchRow(shader: path, mode: mode.rawValue, result: result, previous: previous, note: notes.joined(separator: ", ")))
-                    if !json { FileHandle.standardError.write(Data(String(format: "%@  %@  %.2f ms\n", path, mode.rawValue, ms.median).utf8)) }
-                } catch {
-                    fail("\(mode.rawValue): \(error)")
+            if !failures.isEmpty { throw ExitCode.failure }
+        }
+        func fail(_ message: String) {
+            failures.append(BenchFailure(shader: path, error: message))
+            rows.append(BenchRow(shader: path, mode: "-", note: message))
+            if !json { FileHandle.standardError.write(Data("FAIL  \(path)  \(message)\n".utf8)) }
+        }
+        let check = tools.withWorkDirectory(for: path) { checker.check(path: path, workDirectory: $0) }
+        guard check.report.ok, let document = check.artifacts.document else {
+            fail("check failed at \(check.report.stage?.rawValue ?? "?"): \(check.report.error?.split(separator: "\n").first.map(String.init) ?? "")")
+            return try report()
+        }
+        let notes = BenchFormatter.notes(for: document)
+        let sha = BenchRunner.sha256(ofFile: path)
+        let git = GitInfo.of(path: path)
+        for mode in modes {
+            do {
+                let driver = try levelOptions.driver(document: document, mode: mode, matcher: matcher, recording: recording)
+                // A fresh renderer per mode, so persistent buffers start black and warmup fills them again.
+                var metalMs: Double?
+                var device = ""
+                let times = try BenchRunner.measure(makeRenderer: {
+                    let start = DispatchTime.now()
+                    let renderer = try Renderer(artifacts: check.artifacts, sizer: try ISFPassSizer(path: path))
+                    // Only the first build counts. Later ones hit the OS's Metal cache and say nothing about VDMX.
+                    if metalMs == nil { metalMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000 }
+                    device = renderer.device.name
+                    return renderer
+                }, driver: driver, options: options)
+                guard let stats = Stats(times.flatMap { $0 }) else { continue }
+                var ms = stats
+                var repeats: [Double]?
+                if `repeat` > 1 {
+                    repeats = times.map { Stats.median($0) }
+                    ms.median = Stats.median(repeats!)
                 }
+                let result = BenchResult(
+                    at: BenchRunner.iso8601(), shader: path, sha256: sha, git: git,
+                    size: [renderSize.width, renderSize.height], fps: fps, mode: mode,
+                    warmup: warmup, frames: frames, repeat: `repeat`, ms: ms, repeats: repeats,
+                    passes: max(document.passes.count, 1),
+                    compile_ms: .init(glsl: check.report.timings["glsl"] ?? 0, spirv_cross: check.report.timings["spirv_cross"] ?? 0, metal: metalMs ?? 0),
+                    device: device, isftool: isftoolVersion
+                )
+                // Written as soon as it is measured, so a long run that stops halfway keeps what it has.
+                try store.append(result)
+                measured.append(result)
+                let previous = ResultsStore.previous(of: result, in: history)
+                rows.append(BenchRow(shader: path, mode: mode.rawValue, result: result, previous: previous, note: notes.joined(separator: ", ")))
+                if !json { FileHandle.standardError.write(Data(String(format: "%@  %@  %.2f ms\n", path, mode.rawValue, ms.median).utf8)) }
+            } catch {
+                fail("\(mode.rawValue): \(error)")
             }
         }
 
-        if json {
-            struct Output: Encodable { var results: [BenchResult]; var failures: [BenchFailure] }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            print(String(decoding: try encoder.encode(Output(results: measured, failures: failures)), as: UTF8.self))
-        } else {
-            print(BenchFormatter.format(BenchFormatter.sorted(rows, by: sort), compare: !noCompare))
-        }
-        if !failures.isEmpty { throw ExitCode.failure }
+        try report()
     }
 }
 
