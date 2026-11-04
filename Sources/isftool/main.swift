@@ -108,19 +108,22 @@ struct Check: ParsableCommand {
 }
 
 struct Render: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Render one frame of a shader to PNG.")
+    static let configuration = CommandConfiguration(abstract: "Render frames of a shader to PNG.")
 
     @Argument(help: "ISF fragment shader (.fs).")
     var shader: String
 
-    @Option(help: "Output PNG file.")
+    @Option(help: "Output PNG file for one frame, or a directory for several.")
     var out: String
 
     @Option(help: "Output size.")
     var size = "1920x1440"
 
-    @Option(help: "Time of the frame in seconds.")
+    @Option(help: "Time of the first frame written, in seconds. Frames before it are drawn too, so persistent buffers fill up.")
     var at: Double = 0
+
+    @Option(help: "Number of frames to write.")
+    var frames = 1
 
     @Option(help: "Clock rate. TIME = i / fps, TIMEDELTA = 1 / fps, FRAMEINDEX = i.")
     var fps: Double = 60
@@ -136,6 +139,7 @@ struct Render: ParsableCommand {
     func validate() throws {
         guard fps > 0 else { throw ValidationError("--fps must be positive") }
         guard at >= 0 else { throw ValidationError("--at must not be negative") }
+        guard frames >= 1 else { throw ValidationError("--frames must be at least 1") }
     }
 
     func run() throws {
@@ -155,13 +159,21 @@ struct Render: ParsableCommand {
                 throw ValidationError("\(error)")
             }
         }
-        let frameIndex = Int((at * fps).rounded())
-        let frame = FrameInfo.at(frame: frameIndex, fps: fps, renderSize: renderSize, date: FrameInfo.localDate())
+        let plan = RenderPlan(at: at, fps: fps, frames: frames)
+        let paths: [URL]
         do {
-            let renderer = try Renderer(artifacts: result.artifacts)
-            let image = try renderer.render(frame: frame, values: values.values)
-            try PNGWriter.write(image, to: URL(fileURLWithPath: out))
-            print("wrote \(out)  (\(image.width)x\(image.height), TIME \(frame.time), FRAMEINDEX \(frame.frameIndex))")
+            paths = try plan.outputPaths(out: out, shader: shader)
+        } catch {
+            throw ValidationError("\(error)")
+        }
+        do {
+            let renderer = try Renderer(artifacts: result.artifacts, sizer: try ISFPassSizer(path: shader))
+            let drawn = plan.drawn.map { FrameInfo.at(frame: $0, fps: fps, renderSize: renderSize, date: FrameInfo.localDate()) }
+            try renderer.renderFrames(frames: drawn, values: values.values, capture: plan.drawn.map(plan.written.contains)) { n, image in
+                let path = paths[n - plan.start]
+                try PNGWriter.write(image, to: path)
+                print("wrote \(path.path)  (\(image.width)x\(image.height), TIME \(drawn[n].time), FRAMEINDEX \(drawn[n].frameIndex))")
+            }
         } catch {
             FileHandle.standardError.write(Data("render failed: \(error)\n".utf8))
             throw ExitCode.failure

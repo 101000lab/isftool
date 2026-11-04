@@ -82,9 +82,25 @@ public struct InputValues: Equatable, Sendable {
     }
 }
 
+/// What ISFMSLScene writes into an ISFShaderImgInfo for a texture.
+public struct ImageInfo: Equatable, Sendable {
+    public var width: Int
+    public var height: Int
+    /// 1 for every texture ISFMSLScene binds (VVMTLTextureImage.flipV is NO for pool and MTKTextureLoader textures).
+    /// The generated GLSL then reads with a bottom-left origin from a texture whose first row is the top.
+    public var flip: Bool
+
+    public init(width: Int, height: Int, flip: Bool = true) {
+        self.width = width
+        self.height = height
+        self.flip = flip
+    }
+}
+
 /// Builds the bytes of VVISF_UNIFORMS the way ISFMSLScene writes them.
 public enum UniformPacker {
-    public static func pack(document: ISFDocumentInfo, values: [String: ISFValue], frame: FrameInfo) -> Data {
+    /// - Parameter images: Keyed by input, IMPORTED or pass TARGET name. Names without an entry keep zeros, as an unbound texture would.
+    public static func pack(document: ISFDocumentInfo, values: [String: ISFValue], frame: FrameInfo, images: [String: ImageInfo] = [:]) -> Data {
         let layout = UniformLayout(document: document)
         var data = Data(count: layout.bufferSize)
         data.withUnsafeMutableBytes { raw in
@@ -101,6 +117,18 @@ public enum UniformPacker {
             put(frame.frameIndex, at: 36)
 
             let base = Int(UniformLayout.renderInfoSize)
+            func putImage(_ name: String, relative: UInt32?) {
+                guard let relative, let info = images[name] else { return }
+                let offset = base + Int(relative)
+                for (i, v) in [Float(0), 0, 1, 1].enumerated() { put(v, at: offset + i * 4) }
+                put(Float(info.width), at: offset + 16)
+                put(Float(info.height), at: offset + 20)
+                put(UInt32(info.flip ? 1 : 0), at: offset + 24)
+            }
+            for imp in document.imports { putImage(imp.name, relative: imp.offset) }
+            for pass in document.passes where !pass.target.isEmpty { putImage(pass.target, relative: pass.offset) }
+            for input in document.inputs where input.usesImage && input.type != "Cube" { putImage(input.name, relative: input.offset) }
+
             for input in document.inputs {
                 guard let relative = input.offset else { continue }
                 let offset = base + Int(relative)

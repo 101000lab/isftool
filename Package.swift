@@ -40,7 +40,7 @@ let package = Package(
             name: "ISFKit",
             dependencies: ["ISFGLSLBridge"],
             swiftSettings: [.swiftLanguageMode(.v5)],
-            linkerSettings: [.linkedFramework("Metal")]
+            linkerSettings: [.linkedFramework("Metal"), .linkedFramework("MetalKit")]
         ),
         .testTarget(
             name: "ISFKitTests",

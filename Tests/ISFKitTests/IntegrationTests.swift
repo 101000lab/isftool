@@ -108,14 +108,30 @@ final class IntegrationTests {
         #expect(passes.map { "\($0.target) \($0.width)x\($0.height) \($0.persistent)" } == ["lineState 4x1 true", " 1920x1440 false"])
     }
 
-    func render(_ name: String, size: RenderSize = RenderSize(width: 64, height: 48), set: [String] = []) throws -> RenderedImage {
+    func renderer(_ name: String, size: RenderSize) throws -> (Renderer, ISFDocumentInfo) {
         let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: size), toolchain: toolchain, metal: nil, options: CheckOptions(metal: false))
         let result = checker.check(path: fixture(name), workDirectory: workDirectory.appendingPathComponent(UUID().uuidString))
         try #require(result.report.ok, Comment(rawValue: CheckFormatter.format(result)))
         let document = try #require(result.artifacts.document)
+        return (try Renderer(artifacts: result.artifacts, sizer: try ISFPassSizer(path: fixture(name))), document)
+    }
+
+    /// Renders frames 0 through `frame` and returns the last one.
+    func render(_ name: String, size: RenderSize = RenderSize(width: 64, height: 48), frame: Int = 0, set: [String] = []) throws -> RenderedImage {
+        let (renderer, document) = try renderer(name, size: size)
         var values = InputValues(document: document)
         for s in set { try values.set(s, document: document) }
-        return try Renderer(artifacts: result.artifacts).render(frame: FrameInfo(renderSize: size), values: values.values)
+        let frames = (0...frame).map { FrameInfo.at(frame: $0, fps: 60, renderSize: size) }
+        var last: RenderedImage?
+        try renderer.renderFrames(frames: frames, values: values.values, capture: frames.map { $0.frameIndex == frame }) { _, image in last = image }
+        return try #require(last)
+    }
+
+    func expectTopHalfWhite(_ image: RenderedImage) {
+        for x in [2, image.width - 3] {
+            #expect(image.pixel(x: x, y: 2) == (255, 255, 255, 255), "top at x \(x)")
+            #expect(image.pixel(x: x, y: image.height - 3) == (0, 0, 0, 0), "bottom at x \(x)")
+        }
     }
 
     /// Design 7.3: normalized y = 1 must be the top row of the PNG and x = 1 the right column, with no flip anywhere.
@@ -133,10 +149,36 @@ final class IntegrationTests {
         #expect(image.pixel(x: 0, y: 47) == (0, 0, 255, 255))
     }
 
-    @Test func testRenderRejectsNamedPassesForNow() throws {
-        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: RenderSize(width: 64, height: 48)), toolchain: toolchain, metal: nil, options: CheckOptions(metal: false))
-        let result = checker.check(path: fixture("line_space.fs"), workDirectory: workDirectory.appendingPathComponent(UUID().uuidString))
-        #expect(throws: RenderError.self) { try Renderer(artifacts: result.artifacts) }
+    /// Design 7.3 and M3: with _flip = 1, as ISFMSLScene writes it, a persistent buffer read back keeps its top half on top.
+    @Test func testPersistentBufferKeepsOrientationAcrossFrames() throws {
+        expectTopHalfWhite(try render("persistent_orientation.fs", frame: 10))
+    }
+
+    @Test func testImportedImageKeepsOrientation() throws {
+        expectTopHalfWhite(try render("imported_orientation.fs"))
+    }
+
+    @Test func testFloatBufferKeepsSmallSteps() throws {
+        // 100 frames of +0.001 is 0.1, which is 25.5 in 8 bits.
+        let float = try render("float_accumulate.fs", frame: 99)
+        #expect((25...26).contains(float.pixel(x: 10, y: 10).0), "float buffer: \(float.pixel(x: 10, y: 10))")
+        let byte = try render("byte_accumulate.fs", frame: 99)
+        #expect(byte.pixel(x: 10, y: 10).0 == 0, "8 bit buffer rounds +0.001 away")
+    }
+
+    /// ISFMSLScene copies a FLOAT last pass into the 8 bit render target, stretched to the render size.
+    @Test func testFloatLastPassIsCopiedToOutputSize() throws {
+        let image = try render("float_output.fs", frame: 99)
+        #expect(image.width == 64 && image.height == 48)
+        let left = image.pixel(x: 5, y: 24)
+        let right = image.pixel(x: 58, y: 24)
+        #expect(left.0 == 255 && right.0 == 0, "left \(left), right \(right)")
+        #expect((25...26).contains(left.1), "green accumulated in float: \(left)")
+    }
+
+    @Test func testPassSizesFollowExpressions() throws {
+        let sizes = try ISFPassSizer(path: fixture("line_space.fs")).passSizes(values: [:], renderSize: RenderSize(width: 640, height: 360))
+        #expect(sizes == [RenderSize(width: 4, height: 1), RenderSize(width: 640, height: 360)])
     }
 
     @Test func testBridgeReportsParseErrors() throws {

@@ -359,6 +359,41 @@ import Testing
     }
 }
 
+@Suite struct ImageInfoPackingTests {
+    @Test func testWritesRectSizeAndFlipForEveryKindOfTexture() {
+        let doc = ISFDocumentInfo(
+            maxUBOSize: 144,
+            inputs: [ISFInput(name: "inputImage", type: "Image", offset: 64)],
+            passes: [ISFPass(target: "state", persistent: true, offset: 32), ISFPass(target: "")],
+            imports: [ISFImport(name: "logo", path: "/x.png", offset: 0)]
+        )
+        let images = ["logo": ImageInfo(width: 640, height: 480), "state": ImageInfo(width: 48, height: 1), "inputImage": ImageInfo(width: 64, height: 64)]
+        let data = UniformPacker.pack(document: doc, values: [:], frame: FrameInfo(renderSize: RenderSize(width: 1, height: 1)), images: images)
+        func float(_ o: Int) -> Float { data.withUnsafeBytes { $0.load(fromByteOffset: o, as: Float.self) } }
+        func uint(_ o: Int) -> UInt32 { data.withUnsafeBytes { $0.load(fromByteOffset: o, as: UInt32.self) } }
+        for (base, w, h) in [(48, 640, 480), (80, 48, 1), (112, 64, 64)] {
+            #expect([float(base), float(base + 4), float(base + 8), float(base + 12)] == [0, 0, 1, 1])
+            #expect(float(base + 16) == Float(w) && float(base + 20) == Float(h))
+            #expect(uint(base + 24) == 1)
+        }
+    }
+}
+
+@Suite struct RenderPlanTests {
+    @Test func testDrawsFromFrameZeroAndWritesFromAt() {
+        let plan = RenderPlan(at: 0.5, fps: 60, frames: 3)
+        #expect(plan.drawn == 0..<33)
+        #expect(plan.written == 30..<33)
+    }
+
+    @Test func testOutputPaths() throws {
+        #expect(try RenderPlan(at: 0, fps: 60, frames: 1).outputPaths(out: "a/b.png", shader: "x/s.fs").map(\.path).last!.hasSuffix("a/b.png"))
+        let many = try RenderPlan(at: 1, fps: 60, frames: 2).outputPaths(out: "out", shader: "x/line_space.fs").map(\.lastPathComponent)
+        #expect(many == ["line_space_00060.png", "line_space_00061.png"])
+        #expect(throws: RenderError.self) { try RenderPlan(at: 0, fps: 60, frames: 2).outputPaths(out: "b.png", shader: "s.fs") }
+    }
+}
+
 @Suite struct InputValuesTests {
     let doc = ISFDocumentInfo(inputs: [
         ISFInput(name: "Speed", type: "Float", default: .number(0.4), current: .number(0.4)),
