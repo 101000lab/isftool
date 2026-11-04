@@ -19,15 +19,14 @@ brew install glslang spirv-cross
 
 ## Install
 
-Clone this repository with its submodules, then build.
-
 ```sh
-git submodule update --init
+git clone --recursive https://github.com/101000lab/isftool.git
+cd isftool
 swift build -c release
 cp .build/release/isftool /usr/local/bin/
 ```
 
-ISFGLSLGenerator is a git submodule under `Vendor/`.
+ISFGLSLGenerator is a git submodule under `Vendor/`. If you cloned without `--recursive`, run `git submodule update --init` before building.
 
 ## Usage
 
