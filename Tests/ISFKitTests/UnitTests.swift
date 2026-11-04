@@ -394,6 +394,134 @@ import Testing
     }
 }
 
+@Suite struct RecordingTests {
+    let recording = try! Recording(jsonLines: """
+    {"t": 0.0, "address": "/Filter 1", "value": 0.1}
+    {"t": 1.0, "address": "/Filter 1", "value": 0.5}
+    {"t": 0.5, "address": "/Filter 2", "value": 0.9}
+    {"t": 2.0, "address": "/Filter 2", "value": 0.2}
+
+    """)
+
+    @Test func testHoldsTheLastValueAndLoops() {
+        #expect(recording.duration == 2)
+        #expect(recording.filterCount == 2)
+        #expect(recording.sample("/Filter 1", at: 0.99) == 0.1)
+        #expect(recording.sample("/Filter 1", at: 1.0) == 0.5)
+        #expect(recording.sample("/Filter 1", at: 3.5) == 0.5, "3.5 is 1.5 into the second loop")
+        #expect(recording.sample("/Filter 9", at: 0) == nil)
+    }
+
+    @Test func testBeforeTheFirstSampleUsesTheLastValue() {
+        // As the preview's sampleTrack does: the loop still holds what the end of the previous pass left.
+        #expect(recording.sample("/Filter 2", at: 0.2) == 0.2)
+    }
+
+    @Test func testRejectsMalformedLines() {
+        #expect(throws: InputValueError.self) { try Recording(jsonLines: "{\"t\": 0}") }
+    }
+}
+
+@Suite struct LevelDriverTests {
+    let matcher = try! LevelMatcher()
+    let recording = Recording(tracks: [
+        "/Filter 1": .init(times: [0], values: [0.5]),
+        "/Filter 2": .init(times: [0], values: [1.0]),
+    ])
+
+    func doc(levels: Int) -> ISFDocumentInfo {
+        var inputs = (1...levels).map { ISFInput(name: "Level\($0)", type: "Float", min: .number(0.2), max: .number(0.8), current: .number(0)) }
+        inputs.append(ISFInput(name: "LevelGain", type: "Float", max: .number(4), current: .number(1)))
+        return ISFDocumentInfo(inputs: inputs)
+    }
+
+    @Test func testDefaultKeepsCurrentValues() throws {
+        let d = try LevelDriver(document: doc(levels: 1), mode: .default, matcher: matcher)
+        #expect(d.values(at: 0)["Level1"] == .number(0))
+        #expect(!d.varies)
+    }
+
+    @Test func testMaxSetsLevelsButNotLevelGain() throws {
+        let v = try LevelDriver(document: doc(levels: 2), mode: .max, matcher: matcher).values(at: 0)
+        #expect(v["Level1"] == .number(0.8))
+        #expect(v["LevelGain"] == .number(1))
+    }
+
+    @Test func testRecordingAssignsFiltersInOrderAndWraps() throws {
+        let d = try LevelDriver(document: doc(levels: 3), mode: .recording, matcher: matcher, recording: recording)
+        #expect(d.filters == ["Level1": "/Filter 1", "Level2": "/Filter 2", "Level3": "/Filter 1"])
+        let v = d.values(at: 0)
+        // value × (MAX − MIN) + MIN
+        #expect(v["Level1"] == .number(0.5 * 0.6 + 0.2))
+        #expect(v["Level2"] == .number(0.8))
+        #expect(d.varies)
+    }
+
+    @Test func testSetWinsOverTheMode() throws {
+        let v = try LevelDriver(document: doc(levels: 1), mode: .max, matcher: matcher, assignments: ["Level1=0.3"]).values(at: 0)
+        #expect(v["Level1"] == .number(0.3))
+    }
+
+    @Test func testRecordingModeNeedsARecording() {
+        #expect(throws: InputValueError.self) { try LevelDriver(document: doc(levels: 1), mode: .recording, matcher: matcher) }
+    }
+}
+
+@Suite struct StatsTests {
+    @Test func testSummary() throws {
+        let s = try #require(Stats((1...20).map(Double.init)))
+        #expect(s.median == 10.5)
+        #expect(s.p95 == 19, "nearest rank: the 19th of 20")
+        #expect(s.min == 1)
+        #expect(s.mean == 10.5)
+        #expect(abs(s.stddev - 5.766) < 0.001, "population standard deviation")
+        #expect(Stats([]) == nil)
+        #expect(Stats.median([3, 1, 2]) == 2)
+    }
+}
+
+@Suite struct ResultsStoreTests {
+    func result(_ shader: String, mode: LevelMode = .default, frames: Int = 240, median: Double) -> BenchResult {
+        BenchResult(at: "2026-11-04T00:00:00Z", shader: shader, sha256: "", git: nil, size: [1920, 1440], fps: 60, mode: mode,
+                    warmup: 60, frames: frames, repeat: 1, ms: Stats(median: median, p95: median, min: median, mean: median, stddev: 0),
+                    repeats: nil, passes: 1, compile_ms: .init(glsl: 0, spirv_cross: 0, metal: 0), device: "GPU", isftool: "0")
+    }
+
+    @Test func testAppendsAndFindsTheLatestMatchingRun() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("isftool-\(UUID().uuidString)/results.jsonl")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = ResultsStore(path: url.path)
+        try store.append(result("a.fs", median: 2))
+        try store.append(result("a.fs", mode: .max, median: 9))
+        try store.append(result("a.fs", frames: 10, median: 7))
+        try store.append(result("a.fs", median: 3))
+        let history = store.load()
+        #expect(history.count == 4)
+        let previous = ResultsStore.previous(of: result("a.fs", median: 4), in: history)
+        #expect(previous?.ms.median == 3)
+        #expect(ResultsStore.previous(of: result("b.fs", median: 1), in: history) == nil)
+        let row = BenchRow(shader: "a.fs", mode: "default", result: result("a.fs", median: 4.5), previous: previous)
+        #expect(row.change == 50)
+    }
+}
+
+@Suite struct BenchFormatterTests {
+    @Test func testSortsSlowestFirstAndMarksBudgets() {
+        let r = ResultsStoreTests()
+        let rows = [
+            BenchRow(shader: "light.fs", mode: "default", result: r.result("light.fs", median: 0.5)),
+            BenchRow(shader: "broken.fs", mode: "-", note: "check failed"),
+            BenchRow(shader: "heavy.fs", mode: "default", result: r.result("heavy.fs", median: 20)),
+            BenchRow(shader: "mid.fs", mode: "default", result: r.result("mid.fs", median: 10)),
+        ]
+        let lines = BenchFormatter.format(BenchFormatter.sorted(rows, by: .median), compare: false).split(separator: "\n").map(String.init)
+        #expect(lines[1].hasPrefix("!!") && lines[1].contains("heavy.fs"))
+        #expect(lines[2].hasPrefix("! ") && lines[2].contains("mid.fs"))
+        #expect(lines[3].contains("light.fs"))
+        #expect(lines[4].contains("broken.fs") && lines[4].contains("check failed"))
+    }
+}
+
 @Suite struct InputValuesTests {
     let doc = ISFDocumentInfo(inputs: [
         ISFInput(name: "Speed", type: "Float", default: .number(0.4), current: .number(0.4)),

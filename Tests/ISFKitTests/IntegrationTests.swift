@@ -176,6 +176,20 @@ final class IntegrationTests {
         #expect((25...26).contains(left.1), "green accumulated in float: \(left)")
     }
 
+    @Test func testBenchMeasuresEveryRepeatOfTheSameFrames() throws {
+        let size = RenderSize(width: 64, height: 48)
+        let (_, document) = try renderer("empty.fs", size: size)
+        let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: size), toolchain: toolchain, metal: nil, options: CheckOptions(metal: false))
+        let check = checker.check(path: fixture("empty.fs"), workDirectory: workDirectory.appendingPathComponent(UUID().uuidString))
+        let driver = try LevelDriver(document: document, mode: .default, matcher: try LevelMatcher())
+        let times = try BenchRunner.measure(
+            makeRenderer: { try Renderer(artifacts: check.artifacts, sizer: try ISFPassSizer(path: self.fixture("empty.fs"))) },
+            driver: driver, options: BenchOptions(size: size, warmup: 2, frames: 5, repeats: 2), spinUp: 0
+        )
+        #expect(times.map(\.count) == [5, 5])
+        #expect(times.joined().allSatisfy { $0 > 0 && $0 < 1 }, "an empty pass at 64x48 is far under 1 ms: \(times)")
+    }
+
     @Test func testPassSizesFollowExpressions() throws {
         let sizes = try ISFPassSizer(path: fixture("line_space.fs")).passSizes(values: [:], renderSize: RenderSize(width: 640, height: 360))
         #expect(sizes == [RenderSize(width: 4, height: 1), RenderSize(width: 640, height: 360)])

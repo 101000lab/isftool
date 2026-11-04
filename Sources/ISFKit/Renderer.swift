@@ -314,9 +314,14 @@ public final class Renderer {
     /// Renders frames in order and hands each one marked in `capture` to `handle` as soon as the GPU finishes it.
     /// Frames are handed over one at a time so a long run does not keep every readback alive.
     public func renderFrames(frames: [FrameInfo], values: [String: ISFValue], capture: [Bool], handle: (Int, RenderedImage) throws -> Void) throws {
+        try renderFrames(frames: frames, values: { _ in values }, capture: capture, handle: handle)
+    }
+
+    /// - Parameter values: The input values for each frame, for Level inputs that follow a recording.
+    public func renderFrames(frames: [FrameInfo], values: (FrameInfo) -> [String: ISFValue], capture: [Bool], handle: (Int, RenderedImage) throws -> Void) throws {
         for (n, frame) in frames.enumerated() {
             guard let commandBuffer = commandQueue.makeCommandBuffer() else { throw RenderError(description: "cannot create a command buffer") }
-            let output = try encode(frame: frame, values: values, into: commandBuffer)
+            let output = try encode(frame: frame, values: values(frame), into: commandBuffer)
             guard capture[n] else {
                 commandBuffer.commit()
                 continue

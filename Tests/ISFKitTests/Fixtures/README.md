@@ -14,3 +14,4 @@
 | `top_white.png` | 8x8, top half opaque white, bottom half transparent |
 | `float_accumulate.fs` / `byte_accumulate.fs` | Written for isftool. Accumulate 0.001 per frame in a FLOAT and an 8 bit persistent buffer |
 | `float_output.fs` | Written for isftool. A FLOAT last pass at half width, which has to be copied into the 8 bit output |
+| `empty.fs` | Written for isftool. Outputs transparent black, for the floor of bench |
