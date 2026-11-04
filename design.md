@@ -72,7 +72,7 @@ VDMX6 がこれ (かその社内版) を使っていると判断した根拠.
 
 手元の Homebrew 版で, 上の glslang と SPIRV-Cross の引数をそのまま使って line_space を変換し, Metal でコンパイルできた (検証済み). 関数名 `vertex` を持つ自作の小さなシェーダーは, それでも Homebrew の SPIRV-Cross が `vertex0` に改名して通った. 一方 VDMX では `vec2 vertex(float column, float row)` を持つ super_polygons が `expected unqualified-id` で落ちた (vjcomponents の `5d195dd` で修正). 理由は分かっていない. VIDVOX の SPIRV-Cross の版の違いかもしれないが, SPIRV-Cross は以前から MSL の予約語を改名しているので, 版の違いだけとは言い切れない. 本物の super_polygons (修正前) を M1 で isftool に通して確かめる. どちらの結果でも, Metal の予約語は isftool が自前で検査する (7.2).
 
-M1 で確かめた結果 (検証済み). 本物の super_polygons (修正前) も, 字句検査を外すと Homebrew の SPIRV-Cross が `vertex0` に改名し, Metal でもコンパイルできた. 字句検査を入れると `stage: lint` で失敗する (統合テストに両方を残した). VDMX で落ちた理由は依然として分からない.
+M1 で確かめた結果 (検証済み). 本物の super_polygons (修正前) も, 字句検査を外すと Homebrew の SPIRV-Cross が `vertex0` に改名し, Metal でもコンパイルできた. 字句検査を入れると `stage: lint` で失敗する (統合テストに両方を残した). VDMX で落ちた理由は SPIRV-Cross の版の違いだった (2026-11-04, 検証済み). VDMX と同じ同梱の dylib (10 章) を使い捨てのプログラムから呼ぶと, 同じ GLSL から `vertex` を改名しない MSL が出て, Metal が VDMX と同じ `expected unqualified-id` で落とした. 違いは `vertex` の 5 行だけだった. 同じ比べ方で vjcomponents の 162 本, rejected の 237 本, テストのフィクスチャ 11 本のうち, glslang を通る 408 本の fragment の MSL を比べると, この 1 本以外は 1 文字も違わなかった. `layout` を使う 2 本は, 同梱の glslang でも Homebrew と同じく構文エラーになった.
 
 ISFMSLKit の `extern/` には, VIDVOX がビルドした glslang と SPIRV-Cross の dylib (arm64 と x86_64, macOS 15 以上) が同梱されている. これを呼べば VDMX と同じ版で変換できるが, このセッションでは外部のビルド済みバイナリの実行が権限確認で止められたので試していない. 使うかどうかはユーザーの判断待ち (10 章).
 
@@ -202,7 +202,7 @@ spirv-cross frag.spv --reflect                          # JSON. 調べるとき�
 - 頂点の入力は `VERTEXDATA [[attribute(0)]]`.
 - 予約語の再現.
   - 変数名 `layout`: glslang で `syntax error, unexpected LAYOUT, expecting COMMA or SEMICOLON`. VDMX と同じ文言 (検証済み).
-  - 関数名 `vertex`: 自作の小さなシェーダーでは, Homebrew の spirv-cross が VIDVOX と同じ引数でも `vertex0` に改名して, Metal でも通ってしまった. VDMX で落ちた理由は未解明 (2.5). Metal の予約語は isftool が自前で字句検査する (7.2).
+  - 関数名 `vertex`: 自作の小さなシェーダーでは, Homebrew の spirv-cross が VIDVOX と同じ引数でも `vertex0` に改名して, Metal でも通ってしまった. VDMX で落ちたのは, VDMX の古い SPIRV-Cross が `vertex` を改名しないため (2.5). Metal の予約語は isftool が自前で字句検査する (7.2).
 
 ## 5. CLI 仕様
 
@@ -497,9 +497,9 @@ isftool/
 
 ## 10. 未決事項とリスク
 
-- **glslang と SPIRV-Cross の版の違い**. isftool は Homebrew の版を使うが, VDMX は VIDVOX が改造した古い版を使う. `vertex` のように結果が変わる例がある (2.5). 対策の候補は 3 つで, ユーザーの判断待ち.
+- **glslang と SPIRV-Cross の版の違い**. isftool は Homebrew の版を使うが, VDMX は VIDVOX の fork の古い版を使う (検証済み. VDMX6 Plus 6.1.3.6 の `ISFMSLKit.framework/Versions/A/Frameworks/` にある `libGLSLangValidatorLib.dylib` と `libSPIRVCrossLib.dylib` は, ISFMSLKit の `extern/` にあるものと arm64 の `__TEXT,__text` が一致した. ファイル全体が違うのはコード署名の差. upstream の glslang や SPIRV-Cross を直に使ってはいない). fork は CLI をライブラリとして呼べるようにし, CLI の `main()` に引数を渡す関数を足しただけの薄いもの (ISFMSLKit の README). 変換の処理に手が入っているかは, fork を upstream と diff していないので確かめていない. ISFMSLKit の `extern/` にある SPIRV-Cross の dylib は `sdk-1.3.239.0-406-gfbff56a2` (2025-03-19 にビルド) で, Homebrew の 1.4.363.0 より古い. glslang の dylib は文字列から版が読み取れなかった. 版の違いで出力が変わったのは, 今のところ `vertex` の改名だけ (2.5). `vertex` のように結果が変わる例がある (2.5). 対策の候補は 3 つで, ユーザーの判断待ち.
   1. Homebrew の版を使い, 違いは字句検査で補う (今の方針で, M0 はこれで始める. 2 と 3 は後から差し替えられ, 構成は変わらない).
-  2. VIDVOX の改造版 (`mrRay/glslang` の `GLSLangValidatorLib` ブランチ, `mrRay/SPIRV-Cross` の `SPIRVCrossLib` ブランチ) をソースからビルドして使う. VDMX に最も近いが, ビルドが重い.
+  2. VIDVOX の fork (`mrRay/glslang` の `GLSLangValidatorLib` ブランチ, `mrRay/SPIRV-Cross` の `SPIRVCrossLib` ブランチ) をソースからビルドして使う. VDMX に最も近いが, ビルドが重い.
   3. ISFMSLKit の `extern/` に同梱されたビルド済みの dylib を呼ぶ. 手軽だが, 外部のビルド済みバイナリを実行することになる. ISFMSLKit のライセンスは GitHub 上で判定されていない (NOASSERTION) ので, 配布するなら確認が要る.
 - VDMX6 が使っているのが公開版の ISFMSLKit そのものかは分からない (社内で手を入れている可能性がある). VDMX で落ちて isftool で通るシェーダーが見つかったら, エラー画面の GLSL を 3 章に追記し, check のテストに足す.
 - `audio` / `audioFFT` 入力に VDMX が渡すテクスチャの形 (幅, 高さ, 形式) は分かっていない. ISFMSLKit は値が無いとき 64x64 の空のテクスチャを渡すだけで, 音声を詰める処理は VDMX 側にある. GPU 時間への影響は小さいとみて, 空のテクスチャで測る.
