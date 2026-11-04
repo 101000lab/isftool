@@ -9,7 +9,8 @@ ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (G
 - テストは `swift test`. Command Line Tools には XCTest が無いので swift-testing (`import Testing`) で書いた. ISFGLSLGenerator と Homebrew の glslang / spirv-cross と Metal を実際に通す統合テスト (`Tests/ISFKitTests/IntegrationTests.swift`) は, ツールが見つからなければ無効になる.
 - M2 は `render` で 1 パスのシェーダーを PNG にするところまで実装し, preview と見比べた (9 章の M2).
 - M3 は複数パス, 持続バッファ, IMPORTED 画像を描けるようにし, `--frames` を足した (9 章の M3).
-- M4 は `bench` と 6 章の Level モードを実装し, `render` にも `--levels`, `--recording`, `--level-pattern` を足した (9 章の M4). 完了条件は 4 つとも満たした (4 は例のシェーダーを差し替えた). `--images` はまだ無い. 次は M5.
+- M4 は `bench` と 6 章の Level モードを実装し, `render` にも `--levels`, `--recording`, `--level-pattern` を足した (9 章の M4). 完了条件は 4 つとも満たした (4 は例のシェーダーを差し替えた). `--images` はまだ無い.
+- M5 は README を足し, Use 済みシェーダーを全部測るスクリプトは vjcomponents の `tools/bench_used.py` に置いた (9 章の M5). isftool は vjcomponents に依存しない.
 - このマシンには Homebrew で glslang と spirv-cross を入れた (2.).
 - 4 章の変換経路は一時ディレクトリで試しただけで, ファイルは残していない.
 - VDMX が使っているとみられる VIDVOX の公開実装を見つけ, ソースを読んだ (2.5). GLSL の組み立ては自前で書かず, その実装 (ISFGLSLGenerator) を組み込む方針に変えた. 3 章の写しは, その実装と VDMX が一致することの証拠として残している.
@@ -492,6 +493,7 @@ isftool/
 ### M5: 仕上げ
 - README (インストール, 例, 数字の読み方と限界).
 - vjcomponents の Use 済みシェーダーを全部測る例. Use 済みの一覧は vjcomponents の preview サーバーの `GET /__feedback` か `isfs/feedback.jsonl` (ファイル名ごとに最後の `use` / `unuse` / `reject` が効く) から作れる. isftool 本体はこの規則を知らなくてよい (`--from` で一覧を渡す).
+- 結果 (2026-11-04). 一覧を作る規則は vjcomponents のものなので, スクリプトは vjcomponents の `tools/bench_used.py` に置き (ユーザーの判断), isftool の README からは vjcomponents の話を外した. スクリプトは `vj_controller.py` の `used_shaders` (ファイル名ごとに最後の判定が効き, フォルダーを移っても追える) で一覧を作り, リポジトリの直下から `isftool bench --from - --recording recordings/vdmx_mic.jsonl` を呼ぶ. 直下から呼ぶのは, パスを毎回同じにして前回と比べられるようにするため. Use 済みの 61 本を 1280x720, `--warmup 10 --frames 30` で 3 モード測って約 2.5 分, 全部成功した. 最も重いのは sine_attractors の max (42.84 ms) で, randomgravities と gravity_flow が続く.
 
 ## 10. 未決事項とリスク
 
