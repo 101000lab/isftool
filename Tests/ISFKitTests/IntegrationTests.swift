@@ -177,7 +177,8 @@ final class IntegrationTests {
             driver: driver, options: BenchOptions(size: size, warmup: 2, frames: 5, repeats: 2), spinUp: 0
         )
         #expect(times.map(\.count) == [5, 5])
-        #expect(times.joined().allSatisfy { $0 > 0 && $0 < 1 }, "an empty pass at 64x48 is far under 1 ms: \(times)")
+        // No upper bound, because GitHub's macOS runners have a virtual GPU that takes over 1 ms even for an empty pass.
+        #expect(times.joined().allSatisfy { $0 > 0 }, "every frame has a GPU time: \(times)")
     }
 
     @Test func testPassSizesFollowExpressions() throws {
