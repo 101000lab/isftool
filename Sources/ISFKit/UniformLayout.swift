@@ -73,8 +73,8 @@ public struct UniformLayout: Equatable, Sendable {
     }
 }
 
-/// Decides which inputs are audio Level inputs (design chapter 6).
-public struct LevelMatcher: Sendable {
+/// Decides which inputs `--feed-envelope` drives (design chapter 6). The default matches Level inputs by name.
+public struct FeedMatcher: Sendable {
     public static let defaultPattern = "^(Level|Lv)(?![a-z]|Gain$)"
 
     private let regex: NSRegularExpression
@@ -83,7 +83,7 @@ public struct LevelMatcher: Sendable {
         regex = try NSRegularExpression(pattern: pattern)
     }
 
-    public func isLevel(_ input: ISFInput) -> Bool {
+    public func matches(_ input: ISFInput) -> Bool {
         guard input.type == "Float" else { return false }
         return regex.firstMatch(in: input.name, range: NSRange(input.name.startIndex..., in: input.name)) != nil
     }

@@ -309,39 +309,39 @@ import Testing
     }
 }
 
-@Suite struct RecordingTests {
-    let recording = try! Recording(jsonLines: """
-    {"t": 0.0, "address": "/Filter 1", "value": 0.1}
-    {"t": 1.0, "address": "/Filter 1", "value": 0.5}
-    {"t": 0.5, "address": "/Filter 2", "value": 0.9}
-    {"t": 2.0, "address": "/Filter 2", "value": 0.2}
-
-    """)
+@Suite struct EnvelopeTests {
+    let envelope = Envelope(channels: [
+        .init(times: [0.0, 1.0], values: [0.1, 0.5]),
+        .init(times: [0.5, 2.0], values: [0.9, 0.2]),
+    ])
 
     @Test func testHoldsTheLastValueAndLoops() {
-        #expect(recording.duration == 2)
-        #expect(recording.filterCount == 2)
-        #expect(recording.sample("/Filter 1", at: 0.99) == 0.1)
-        #expect(recording.sample("/Filter 1", at: 1.0) == 0.5)
-        #expect(recording.sample("/Filter 1", at: 3.5) == 0.5, "3.5 is 1.5 into the second loop")
-        #expect(recording.sample("/Filter 9", at: 0) == nil)
+        #expect(envelope.duration == 2)
+        #expect(envelope.sample(channel: 0, at: 0.99) == 0.1)
+        #expect(envelope.sample(channel: 0, at: 1.0) == 0.5)
+        #expect(envelope.sample(channel: 0, at: 3.5) == 0.5, "3.5 is 1.5 into the second loop")
+        #expect(envelope.sample(channel: 8, at: 0) == nil)
     }
 
     @Test func testBeforeTheFirstSampleUsesTheLastValue() {
         // As the preview's sampleTrack does: the loop still holds what the end of the previous pass left.
-        #expect(recording.sample("/Filter 2", at: 0.2) == 0.2)
+        #expect(envelope.sample(channel: 1, at: 0.2) == 0.2)
     }
 
-    @Test func testRejectsMalformedLines() {
-        #expect(throws: InputValueError.self) { try Recording(jsonLines: "{\"t\": 0}") }
+    @Test func testBundledIsVDMXMicrophoneCapture() {
+        let bundled = Envelope.bundled
+        #expect(bundled.channels.count == 16)
+        #expect(abs(bundled.duration - 30.0146) < 1e-9)
+        #expect(bundled.channels.map(\.times.count).reduce(0, +) == 20313)
+        #expect(bundled.channels.allSatisfy { $0.values.allSatisfy { (0...1).contains($0) } })
     }
 }
 
-@Suite struct LevelDriverTests {
-    let matcher = try! LevelMatcher()
-    let recording = Recording(tracks: [
-        "/Filter 1": .init(times: [0], values: [0.5]),
-        "/Filter 2": .init(times: [0], values: [1.0]),
+@Suite struct InputDriverTests {
+    let matcher = try! FeedMatcher()
+    let envelope = Envelope(channels: [
+        .init(times: [0], values: [0.5]),
+        .init(times: [0], values: [1.0]),
     ])
 
     func doc(levels: Int) -> ISFDocumentInfo {
@@ -351,34 +351,31 @@ import Testing
     }
 
     @Test func testDefaultKeepsCurrentValues() throws {
-        let d = try LevelDriver(document: doc(levels: 1), mode: .default, matcher: matcher)
+        let d = try InputDriver(document: doc(levels: 1), mode: .default, matcher: matcher)
         #expect(d.values(at: 0)["Level1"] == .number(0))
         #expect(!d.varies)
     }
 
-    @Test func testMaxSetsLevelsButNotLevelGain() throws {
-        let v = try LevelDriver(document: doc(levels: 2), mode: .max, matcher: matcher).values(at: 0)
+    @Test func testMaxSetsMatchedInputsButNotLevelGain() throws {
+        let v = try InputDriver(document: doc(levels: 2), mode: .max, matcher: matcher).values(at: 0)
         #expect(v["Level1"] == .number(0.8))
         #expect(v["LevelGain"] == .number(1))
     }
 
-    @Test func testRecordingAssignsFiltersInOrderAndWraps() throws {
-        let d = try LevelDriver(document: doc(levels: 3), mode: .recording, matcher: matcher, recording: recording)
-        #expect(d.filters == ["Level1": "/Filter 1", "Level2": "/Filter 2", "Level3": "/Filter 1"])
+    @Test func testEnvelopeAssignsChannelsInOrderAndWraps() throws {
+        let d = try InputDriver(document: doc(levels: 3), mode: .envelope, matcher: matcher, envelope: envelope)
+        #expect(d.channels == ["Level1": 0, "Level2": 1, "Level3": 0])
         let v = d.values(at: 0)
         // value × (MAX − MIN) + MIN
         #expect(v["Level1"] == .number(0.5 * 0.6 + 0.2))
         #expect(v["Level2"] == .number(0.8))
+        #expect(v["LevelGain"] == .number(1))
         #expect(d.varies)
     }
 
     @Test func testSetWinsOverTheMode() throws {
-        let v = try LevelDriver(document: doc(levels: 1), mode: .max, matcher: matcher, assignments: ["Level1=0.3"]).values(at: 0)
+        let v = try InputDriver(document: doc(levels: 1), mode: .max, matcher: matcher, assignments: ["Level1=0.3"]).values(at: 0)
         #expect(v["Level1"] == .number(0.3))
-    }
-
-    @Test func testRecordingModeNeedsARecording() {
-        #expect(throws: InputValueError.self) { try LevelDriver(document: doc(levels: 1), mode: .recording, matcher: matcher) }
     }
 }
 
@@ -396,7 +393,7 @@ import Testing
 }
 
 @Suite struct ResultsStoreTests {
-    func result(_ shader: String, mode: LevelMode = .default, frames: Int = 240, median: Double) -> BenchResult {
+    func result(_ shader: String, mode: FeedMode = .default, frames: Int = 240, median: Double) -> BenchResult {
         BenchResult(at: "2026-11-04T00:00:00Z", shader: shader, sha256: "", git: nil, size: [1920, 1440], fps: 60, mode: mode,
                     warmup: 60, frames: frames, repeat: 1, ms: Stats(median: median, p95: median, min: median, mean: median, stddev: 0),
                     repeats: nil, passes: 1, compile_ms: .init(glsl: 0, spirv_cross: 0, metal: 0), device: "GPU", isftool: "0")
@@ -421,19 +418,19 @@ import Testing
 }
 
 @Suite struct BenchFormatterTests {
-    @Test func testSortsSlowestFirstAndMarksBudgets() {
+    @Test func testKeepsModeOrderAndMarksBudgets() {
         let r = ResultsStoreTests()
         let rows = [
-            BenchRow(shader: "light.fs", mode: "default", result: r.result("light.fs", median: 0.5)),
-            BenchRow(shader: "broken.fs", mode: "-", note: "check failed"),
-            BenchRow(shader: "heavy.fs", mode: "default", result: r.result("heavy.fs", median: 20)),
-            BenchRow(shader: "mid.fs", mode: "default", result: r.result("mid.fs", median: 10)),
+            BenchRow(shader: "a.fs", mode: "default", result: r.result("a.fs", mode: .default, median: 0.5)),
+            BenchRow(shader: "a.fs", mode: "envelope", result: r.result("a.fs", mode: .envelope, median: 20)),
+            BenchRow(shader: "a.fs", mode: "max", result: r.result("a.fs", mode: .max, median: 10)),
+            BenchRow(shader: "a.fs", mode: "-", note: "check failed"),
         ]
-        let lines = BenchFormatter.format(BenchFormatter.sorted(rows, by: .median), compare: false).split(separator: "\n").map(String.init)
-        #expect(lines[1].hasPrefix("!!") && lines[1].contains("heavy.fs"))
-        #expect(lines[2].hasPrefix("! ") && lines[2].contains("mid.fs"))
-        #expect(lines[3].contains("light.fs"))
-        #expect(lines[4].contains("broken.fs") && lines[4].contains("check failed"))
+        let lines = BenchFormatter.format(rows, compare: false).split(separator: "\n").map(String.init)
+        #expect(lines[1].hasPrefix("  ") && lines[1].contains("default"))
+        #expect(lines[2].hasPrefix("!!") && lines[2].contains("envelope"))
+        #expect(lines[3].hasPrefix("! ") && lines[3].contains("max"))
+        #expect(lines[4].contains("check failed"))
     }
 }
 
@@ -491,10 +488,10 @@ import Testing
     }
 }
 
-@Suite struct LevelMatcherTests {
+@Suite struct FeedMatcherTests {
     @Test func testDefaultPattern() throws {
-        let m = try LevelMatcher()
-        func level(_ name: String, _ type: String = "Float") -> Bool { m.isLevel(ISFInput(name: name, type: type)) }
+        let m = try FeedMatcher()
+        func level(_ name: String, _ type: String = "Float") -> Bool { m.matches(ISFInput(name: name, type: type)) }
         #expect(level("Level"))
         #expect(level("Level2"))
         #expect(level("LvBass"))

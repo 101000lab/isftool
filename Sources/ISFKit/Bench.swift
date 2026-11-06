@@ -28,7 +28,7 @@ public struct BenchResult: Codable, Equatable, Sendable {
     public var git: Git?
     public var size: [Int]
     public var fps: Double
-    public var mode: LevelMode
+    public var mode: FeedMode
     public var warmup: Int
     public var frames: Int
     public var `repeat`: Int
@@ -40,7 +40,7 @@ public struct BenchResult: Codable, Equatable, Sendable {
     public var device: String
     public var isftool: String
 
-    public init(at: String, shader: String, sha256: String, git: Git?, size: [Int], fps: Double, mode: LevelMode, warmup: Int, frames: Int, repeat: Int, ms: Stats, repeats: [Double]?, passes: Int, compile_ms: CompileTimes, device: String, isftool: String) {
+    public init(at: String, shader: String, sha256: String, git: Git?, size: [Int], fps: Double, mode: FeedMode, warmup: Int, frames: Int, repeat: Int, ms: Stats, repeats: [Double]?, passes: Int, compile_ms: CompileTimes, device: String, isftool: String) {
         self.at = at
         self.shader = shader
         self.sha256 = sha256
@@ -139,7 +139,7 @@ public enum BenchRunner {
     ///
     /// Each frame is its own command buffer, committed and waited for, so the GPU idles between frames
     /// and the numbers run a little high. The clock runs on through warmup into the measured frames.
-    public static func measure(renderer: Renderer, driver: LevelDriver, options: BenchOptions) throws -> [Double] {
+    public static func measure(renderer: Renderer, driver: InputDriver, options: BenchOptions) throws -> [Double] {
         guard let queue = renderer.device.makeCommandQueue() else { throw RenderError(description: "cannot create a command queue") }
         var times: [Double] = []
         let date = FrameInfo.localDate()
@@ -160,7 +160,7 @@ public enum BenchRunner {
 
     /// Measures `options.repeats` times. Every repeat starts from frame 0 with a fresh renderer, so all of them
     /// draw the same frames and differ only by measurement noise, not by what the shader shows at a later time.
-    public static func measure(makeRenderer: () throws -> Renderer, driver: LevelDriver, options: BenchOptions, spinUp: Double = 0.5) throws -> [[Double]] {
+    public static func measure(makeRenderer: () throws -> Renderer, driver: InputDriver, options: BenchOptions, spinUp: Double = 0.5) throws -> [[Double]] {
         try spin(renderer: try makeRenderer(), driver: driver, options: options, seconds: spinUp)
         return try (0..<options.repeats).map { _ in try measure(renderer: try makeRenderer(), driver: driver, options: options) }
     }
@@ -168,7 +168,7 @@ public enum BenchRunner {
     /// Keeps the GPU busy for a while on a renderer that is thrown away. The GPU lowers its clock while check runs
     /// glslang and SPIRV-Cross, and a light shader's warmup frames alone are too short to bring it back up,
     /// so without this the first repeat of a light shader came out about twice as slow as the next ones.
-    static func spin(renderer: Renderer, driver: LevelDriver, options: BenchOptions, seconds: Double) throws {
+    static func spin(renderer: Renderer, driver: InputDriver, options: BenchOptions, seconds: Double) throws {
         guard seconds > 0, let queue = renderer.device.makeCommandQueue() else { return }
         let end = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
         var i = 0
@@ -192,12 +192,6 @@ public enum BenchRunner {
         f.formatOptions = [.withInternetDateTime]
         return f.string(from: date)
     }
-}
-
-public enum BenchSort: String, CaseIterable, Sendable {
-    case median
-    case p95
-    case shader
 }
 
 public struct BenchRow: Sendable {
@@ -225,20 +219,6 @@ public struct BenchRow: Sendable {
 public enum BenchFormatter {
     /// 120 fps and 60 fps frame budgets. They only flag outliers, VDMX's own fps also includes compositing and output.
     public static let budgets: (warn: Double, over: Double) = (1000.0 / 120, 1000.0 / 60)
-
-    public static func sorted(_ rows: [BenchRow], by key: BenchSort) -> [BenchRow] {
-        switch key {
-        case .shader:
-            return rows.sorted { ($0.shader, $0.mode) < ($1.shader, $1.mode) }
-        case .median, .p95:
-            func value(_ r: BenchRow) -> Double {
-                guard let ms = r.result?.ms else { return -1 }
-                return key == .median ? ms.median : ms.p95
-            }
-            // Slowest first. Failed shaders have no numbers and go last.
-            return rows.sorted { value($0) > value($1) }
-        }
-    }
 
     public static func format(_ rows: [BenchRow], compare: Bool) -> String {
         let anyRepeat = rows.contains { ($0.result?.repeats?.count ?? 0) > 1 }

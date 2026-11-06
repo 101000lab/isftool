@@ -34,42 +34,37 @@ struct ToolOptions: ParsableArguments {
     }
 }
 
-struct LevelOptions: ParsableArguments {
-    @Option(name: .customLong("recording"), help: "Recording of VDMX's Audio Analysis as JSON Lines of {t, address, value}. Enables the recording mode.")
-    var recording: String?
+struct FeedOptions: ParsableArguments {
+    @Flag(name: .customLong("feed-envelope"), help: "Feed an envelope of VDMX's Audio Analysis into the Float inputs whose names match --feed-envelope-pattern.")
+    var feedEnvelope = false
 
-    @Option(name: .customLong("level-pattern"), help: "Regular expression for Level input names.")
-    var levelPattern = LevelMatcher.defaultPattern
+    @Option(name: .customLong("feed-envelope-pattern"), help: ArgumentHelp("Regular expression for the names of the inputs to feed. (default: \(FeedMatcher.defaultPattern))", valueName: "regex"))
+    var feedEnvelopePattern: String?
 
-    @Option(name: .customLong("set"), help: "Fix an input to a value, as NAME=VALUE. Color is r,g,b,a and Point2D is x,y. Repeatable. Applied after the Level mode.")
+    @Option(name: .customLong("set"), help: "Fix an input to a value, as NAME=VALUE. Color is r,g,b,a and Point2D is x,y. Repeatable. Applied after the envelope.")
     var assignments: [String] = []
 
-    func load() throws -> (LevelMatcher, Recording?) {
-        let matcher: LevelMatcher
+    func validate() throws {
+        if feedEnvelopePattern != nil && !feedEnvelope { throw ValidationError("--feed-envelope-pattern needs --feed-envelope") }
+    }
+
+    func matcher() throws -> FeedMatcher {
         do {
-            matcher = try LevelMatcher(pattern: levelPattern)
+            return try FeedMatcher(pattern: feedEnvelopePattern ?? FeedMatcher.defaultPattern)
         } catch {
-            throw ValidationError("invalid --level-pattern: \(error.localizedDescription)")
-        }
-        guard let recording else { return (matcher, nil) }
-        do {
-            return (matcher, try Recording(contentsOf: recording))
-        } catch {
-            throw ValidationError("cannot read --recording \(recording): \(error)")
+            throw ValidationError("invalid --feed-envelope-pattern: \(error.localizedDescription)")
         }
     }
 
-    func driver(document: ISFDocumentInfo, mode: LevelMode, matcher: LevelMatcher, recording: Recording?) throws -> LevelDriver {
+    func driver(document: ISFDocumentInfo, mode: FeedMode, matcher: FeedMatcher) throws -> InputDriver {
         do {
-            return try LevelDriver(document: document, mode: mode, matcher: matcher, recording: recording, assignments: assignments)
+            return try InputDriver(document: document, mode: mode, matcher: matcher, assignments: assignments)
         } catch {
             throw ValidationError("\(error)")
         }
     }
 }
 
-extension LevelMode: ExpressibleByArgument {}
-extension BenchSort: ExpressibleByArgument {}
 
 func parseSize(_ text: String) throws -> RenderSize {
     guard let size = RenderSize(parsing: text) else { throw ValidationError("invalid size '\(text)', expected WxH") }
@@ -124,16 +119,12 @@ struct Render: ParsableCommand {
     @Option(help: "Clock rate. TIME = i / fps, TIMEDELTA = 1 / fps, FRAMEINDEX = i.")
     var fps: Double = 60
 
-    @Option(help: "How Level inputs are driven: default (DEFAULT values), recording (from --recording) or max (MAX).")
-    var levels: LevelMode = .default
-
-    @OptionGroup var levelOptions: LevelOptions
+    @OptionGroup var feedOptions: FeedOptions
 
     @OptionGroup var tools: ToolOptions
 
     func validate() throws {
         guard fps > 0 else { throw ValidationError("--fps must be positive") }
-        if levels == .recording && levelOptions.recording == nil { throw ValidationError("--levels recording needs --recording") }
         guard at >= 0 else { throw ValidationError("--at must not be negative") }
         guard frames >= 1 else { throw ValidationError("--frames must be at least 1") }
     }
@@ -147,8 +138,7 @@ struct Render: ParsableCommand {
             print(CheckFormatter.format(result))
             throw ExitCode.failure
         }
-        let (matcher, recording) = try levelOptions.load()
-        let driver = try levelOptions.driver(document: document, mode: levels, matcher: matcher, recording: recording)
+        let driver = try feedOptions.driver(document: document, mode: feedOptions.feedEnvelope ? .envelope : .default, matcher: try feedOptions.matcher())
         let plan = RenderPlan(at: at, fps: fps, frames: frames)
         let paths: [URL]
         do {
@@ -172,7 +162,7 @@ struct Render: ParsableCommand {
 }
 
 struct Bench: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Measure the GPU time per frame of a shader in each mode.")
+    static let configuration = CommandConfiguration(abstract: "Measure the GPU time per frame of a shader, also with the envelope and at MAX when --feed-envelope is given.")
 
     @Argument(help: "ISF fragment shader (.fs).")
     var shader: String
@@ -183,7 +173,7 @@ struct Bench: ParsableCommand {
     @Option(help: "Clock rate. TIME = i / fps, TIMEDELTA = 1 / fps, FRAMEINDEX = i.")
     var fps: Double = 60
 
-    @OptionGroup var levelOptions: LevelOptions
+    @OptionGroup var feedOptions: FeedOptions
 
     @Option(help: "Frames drawn before measuring, so persistent buffers fill up.")
     var warmup = 60
@@ -194,9 +184,6 @@ struct Bench: ParsableCommand {
     @Option(help: "How many times to measure. The reported median is the median of each repeat's median.")
     var `repeat` = 1
 
-    @Option(help: "Level modes to measure, comma separated (default, recording, max). Default: default,max, plus recording when --recording is given.")
-    var modes: String?
-
     @Option(help: "Append results to this JSON Lines file.")
     var results = ".isftool/results.jsonl"
 
@@ -206,32 +193,17 @@ struct Bench: ParsableCommand {
     @Flag(help: "Print JSON instead of the table.")
     var json = false
 
-    @Option(help: "Sort the table by median, p95 or shader.")
-    var sort: BenchSort = .median
-
     @OptionGroup var tools: ToolOptions
-
-    func resolvedModes() throws -> [LevelMode] {
-        guard let modes else { return levelOptions.recording == nil ? [.default, .max] : [.default, .recording, .max] }
-        return try modes.split(separator: ",").map {
-            let name = $0.trimmingCharacters(in: .whitespaces)
-            guard let mode = LevelMode(rawValue: name) else { throw ValidationError("unknown mode '\(name)' in --modes") }
-            return mode
-        }
-    }
 
     func validate() throws {
         guard fps > 0 else { throw ValidationError("--fps must be positive") }
         guard warmup >= 0, frames >= 1, `repeat` >= 1 else { throw ValidationError("--warmup must be 0 or more, --frames and --repeat at least 1") }
-        if try resolvedModes().contains(.recording) && levelOptions.recording == nil {
-            throw ValidationError("the recording mode needs --recording")
-        }
     }
 
     func run() throws {
         let renderSize = try parseSize(size)
-        let modes = try resolvedModes()
-        let (matcher, recording) = try levelOptions.load()
+        let modes: [FeedMode] = feedOptions.feedEnvelope ? [.default, .envelope, .max] : [.default]
+        let matcher = try feedOptions.matcher()
         let store = ResultsStore(path: results)
         let history = noCompare ? [] : store.load()
         let toolchain = try tools.toolchain()
@@ -249,7 +221,7 @@ struct Bench: ParsableCommand {
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
                 print(String(decoding: try encoder.encode(Output(results: measured, failures: failures)), as: UTF8.self))
             } else {
-                print(BenchFormatter.format(BenchFormatter.sorted(rows, by: sort), compare: !noCompare))
+                print(BenchFormatter.format(rows, compare: !noCompare))
             }
             if !failures.isEmpty { throw ExitCode.failure }
         }
@@ -268,7 +240,7 @@ struct Bench: ParsableCommand {
         let git = GitInfo.of(path: path)
         for mode in modes {
             do {
-                let driver = try levelOptions.driver(document: document, mode: mode, matcher: matcher, recording: recording)
+                let driver = try feedOptions.driver(document: document, mode: mode, matcher: matcher)
                 // A fresh renderer per mode, so persistent buffers start black and warmup fills them again.
                 var metalMs: Double?
                 var device = ""
@@ -319,21 +291,26 @@ struct Info: ParsableCommand {
     @Option(help: "Output size used to evaluate pass sizes.")
     var size = "1920x1440"
 
-    @Option(name: .customLong("level-pattern"), help: "Regular expression for Level input names.")
-    var levelPattern = LevelMatcher.defaultPattern
+    @Option(name: .customLong("feed-envelope-pattern"), help: ArgumentHelp("Regular expression for the names of the inputs --feed-envelope feeds. They are marked [envelope].", valueName: "regex"))
+    var feedEnvelopePattern = FeedMatcher.defaultPattern
 
     @OptionGroup var tools: ToolOptions
 
     func run() throws {
         let renderSize = try parseSize(size)
-        let matcher = try LevelMatcher(pattern: levelPattern)
+        let matcher: FeedMatcher
+        do {
+            matcher = try FeedMatcher(pattern: feedEnvelopePattern)
+        } catch {
+            throw ValidationError("invalid --feed-envelope-pattern: \(error.localizedDescription)")
+        }
         let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: renderSize), toolchain: try tools.toolchain(), metal: nil)
         let result = tools.withWorkDirectory(for: shader) { checker.check(path: shader, workDirectory: $0) }
         guard result.artifacts.document != nil else {
             print(CheckFormatter.format(result))
             throw ExitCode.failure
         }
-        print(InfoFormatter.format(result, size: renderSize, levels: matcher))
+        print(InfoFormatter.format(result, size: renderSize, feed: matcher))
         if !result.report.ok {
             print("")
             print(CheckFormatter.format(result))

@@ -171,7 +171,7 @@ final class IntegrationTests {
         let (_, document) = try renderer("empty.fs", size: size)
         let checker = Checker(source: ISFGLSLGeneratorSource(renderSize: size), toolchain: toolchain, metal: nil, options: CheckOptions(metal: false))
         let check = checker.check(path: fixture("empty.fs"), workDirectory: workDirectory.appendingPathComponent(UUID().uuidString))
-        let driver = try LevelDriver(document: document, mode: .default, matcher: try LevelMatcher())
+        let driver = try InputDriver(document: document, mode: .default, matcher: try FeedMatcher())
         let times = try BenchRunner.measure(
             makeRenderer: { try Renderer(artifacts: check.artifacts, sizer: try ISFPassSizer(path: self.fixture("empty.fs"))) },
             driver: driver, options: BenchOptions(size: size, warmup: 2, frames: 5, repeats: 2), spinUp: 0

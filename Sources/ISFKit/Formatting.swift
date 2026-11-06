@@ -52,7 +52,7 @@ public enum CheckFormatter {
 }
 
 public enum InfoFormatter {
-    public static func format(_ result: CheckResult, size: RenderSize, levels: LevelMatcher) -> String {
+    public static func format(_ result: CheckResult, size: RenderSize, feed: FeedMatcher) -> String {
         guard let doc = result.artifacts.document else { return "" }
         var out: [String] = []
         out.append("shader: \(doc.path)")
@@ -67,7 +67,7 @@ public enum InfoFormatter {
             if let v = input.default { parts.append("default=\(text(v))") }
             if let v = input.min { parts.append("min=\(text(v))") }
             if let v = input.max { parts.append("max=\(text(v))") }
-            if levels.isLevel(input) { parts.append("[level]") }
+            if feed.matches(input) { parts.append("[envelope]") }
             out.append(parts.joined(separator: " "))
         }
 
