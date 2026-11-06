@@ -3,14 +3,15 @@
 ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (GLSL 4.00 → SPIR-V → Metal) で検査し, 描画し, GPU 時間を測る macOS 用の CLI.
 この文書だけを読んで別セッションが実装を始められることを目指す. 既に手元で確かめたことは「検証済み」, 確かめていない推測は「未検証」と書き分ける.
 
-## 0. 現状 (2026-11-05)
+## 0. 現状 (2026-11-06)
 
 - M0 は完了. M1 は check, info, dump (`uniforms` を除く) を実装し, 完了条件 0 から 7 をテストか手元の実行で確かめた (9 章の M1 に結果を書いた). 未実装は `dump uniforms` と `~/Library/Caches/isftool/` の変換結果キャッシュ.
 - テストは `swift test`. Command Line Tools には XCTest が無いので swift-testing (`import Testing`) で書いた. ISFGLSLGenerator と組み込みの glslang / SPIRV-Cross と Metal を実際に通す統合テスト (`Tests/ISFKitTests/IntegrationTests.swift`) は, Metal のデバイスが無ければ無効になる.
-- M2 は `render` で 1 パスのシェーダーを PNG にするところまで実装し, preview と見比べた (9 章の M2).
+- M2 は `render` で 1 パスのシェーダーを PNG にするところまで実装し, WebGL の preview と見比べた (9 章の M2).
 - M3 は複数パス, 持続バッファ, IMPORTED 画像を描けるようにし, `--frames` を足した (9 章の M3).
 - M4 は `bench` と 6 章の Level モードを実装し, `render` にも `--levels`, `--recording`, `--level-pattern` を足した (9 章の M4). 完了条件は 4 つとも満たした (4 は例のシェーダーを差し替えた). `--images` はまだ無い.
-- M5 は README を足し, Use 済みシェーダーを全部測るスクリプトは vjcomponents の `tools/bench_used.py` に置いた (9 章の M5). isftool は vjcomponents に依存しない.
+- 6 章のモードの与え方を `--feed-envelope` と `--feed-envelope-pattern` にまとめ, envelope をバイナリに組み込んだ (6 章, 2026-11-06). `--levels`, `--recording`, `--level-pattern`, `--modes` は外した.
+- M5 は README を足した (9 章の M5). 複数のシェーダーをまとめて測るスクリプトは呼び出し元のリポジトリに置き, isftool は特定のリポジトリに依存しない.
 - glslang と SPIRV-Cross は, VDMX6 Plus 6.1.3.6 が同梱する版と同じ upstream のコミットを submodule にして組み込んだ (2.6). Homebrew の glslang と spirv-cross は要らなくなった.
 - 4 章の変換経路は一時ディレクトリで試しただけで, ファイルは残していない.
 - VDMX が使っているとみられる VIDVOX の公開実装を見つけ, ソースを読んだ (2.5). GLSL の組み立ては自前で書かず, その実装 (ISFGLSLGenerator) を組み込む方針に変えた. 3 章の写しは, その実装と VDMX が一致することの証拠として残している.
@@ -18,10 +19,10 @@ ISF (Interactive Shader Format) シェーダーを VDMX6 Plus と同じ経路 (G
 
 ## 1. 目的と動機
 
-- 呼び出し元のリポジトリ `~/src/github.com/101000lab/vjcomponents` (以下 vjcomponents) は VDMX6 Plus 用の ISF シェーダー集. シェーダーの確認には WebGL のブラウザ preview を使っているが, VDMX とは別の経路なので次の 2 つが見えない.
-  1. VDMX でだけ失敗するコンパイルエラー. 2026-11 に `layout` を変数名や入力名にしたシェーダー 2 本 (line_space, thin_barcode) が preview では通り, VDMX で `syntax error, unexpected LAYOUT` で失敗した. 以前には関数名 `vertex` が VDMX の Metal 変換で `expected unqualified-id` になった (vjcomponents の AGENTS.md に記録).
-  2. シェーダーごとの GPU コスト. ライブで 16 レイヤー全てに ISF クリップを読み込むと出力が 9 fps 前後まで落ち, 見えている 1 枚 (line_space) だけにすると 120 fps だった. VDMX はクリップが入ったレイヤーを透明度 0 でも毎フレーム描く. どのシェーダーが重いかを VDMX を使わずに順位付けしたい.
-- 最終形は単独の CLI `isftool`. vjcomponents 固有の決まり (Level 入力の命名, 録音ファイルの形式) はフラグで差し替えられる既定値として持ち, リポジトリから切り離しても使えるようにする.
+- 呼び出し元は VDMX6 Plus 用の ISF シェーダー集 (非公開のリポジトリ). シェーダーの確認には WebGL のブラウザ preview を使っているが, VDMX とは別の経路なので次の 2 つが見えない.
+  1. VDMX でだけ失敗するコンパイルエラー. `layout` を変数名や入力名にしたシェーダー (line_space, thin_barcode) が preview では通り, VDMX で `syntax error, unexpected LAYOUT` で失敗した. 関数名 `vertex` を持つシェーダー (super_polygons) は VDMX の Metal 変換で `expected unqualified-id` になった.
+  2. シェーダーごとの GPU コスト. ライブで 16 レイヤー全てに ISF クリップを読み込むと出力が大きく落ち, 見えている 1 枚だけにすると 120 fps だった. VDMX はクリップが入ったレイヤーを透明度 0 でも毎フレーム描く. どのシェーダーが重いかを VDMX を使わずに順位付けしたい.
+- 最終形は単独の CLI `isftool`. 呼び出し元に固有の決まり (Level 入力の命名) はフラグで差し替えられる既定値として持ち, リポジトリから切り離しても使えるようにする.
 - 想定する使い方は 2 つ.
   - 全シェーダーをまとめて検査, 計測して重い順に並べる.
   - 1 本のシェーダーを何度も計測しながらチューニングする (前回との差を見る).
@@ -70,9 +71,9 @@ VDMX6 がこれ (かその社内版) を使っていると判断した根拠.
 - **サンプラー**: 正規化座標, 線形補間, 端はクランプ.
 - **頂点データ**: 解像度ごとに作った四角形のバッファを, 頂点関数が使う最大のバッファ番号 + 1 の番号に置く.
 
-手元の Homebrew 版で, 上の glslang と SPIRV-Cross の引数をそのまま使って line_space を変換し, Metal でコンパイルできた (検証済み). 関数名 `vertex` を持つ自作の小さなシェーダーは, それでも Homebrew の SPIRV-Cross が `vertex0` に改名して通った. 一方 VDMX では `vec2 vertex(float column, float row)` を持つ super_polygons が `expected unqualified-id` で落ちた (vjcomponents の `5d195dd` で修正). 理由は分かっていない. VIDVOX の SPIRV-Cross の版の違いかもしれないが, SPIRV-Cross は以前から MSL の予約語を改名しているので, 版の違いだけとは言い切れない. 本物の super_polygons (修正前) を M1 で isftool に通して確かめる. どちらの結果でも, Metal の予約語は isftool が自前で検査する (7.2).
+手元の Homebrew 版で, 上の glslang と SPIRV-Cross の引数をそのまま使って line_space を変換し, Metal でコンパイルできた (検証済み). 関数名 `vertex` を持つ自作の小さなシェーダーは, それでも Homebrew の SPIRV-Cross が `vertex0` に改名して通った. 一方 VDMX では `vec2 vertex(float column, float row)` を持つ super_polygons が `expected unqualified-id` で落ちた. 理由は分かっていない. VIDVOX の SPIRV-Cross の版の違いかもしれないが, SPIRV-Cross は以前から MSL の予約語を改名しているので, 版の違いだけとは言い切れない. 本物の super_polygons (修正前) を M1 で isftool に通して確かめる. どちらの結果でも, Metal の予約語は isftool が自前で検査する (7.2).
 
-M1 で確かめた結果 (検証済み). 本物の super_polygons (修正前) も, 字句検査を外すと Homebrew の SPIRV-Cross が `vertex0` に改名し, Metal でもコンパイルできた. 字句検査を入れると `stage: lint` で失敗する (統合テストに両方を残した). VDMX で落ちた理由は SPIRV-Cross の版の違いだった (2026-11-04, 検証済み). VDMX と同じ同梱の dylib (10 章) を使い捨てのプログラムから呼ぶと, 同じ GLSL から `vertex` を改名しない MSL が出て, Metal が VDMX と同じ `expected unqualified-id` で落とした. 違いは `vertex` の 5 行だけだった. 同じ比べ方で vjcomponents の 162 本, rejected の 237 本, テストのフィクスチャ 11 本のうち, glslang を通る 408 本の fragment の MSL を比べると, この 1 本以外は 1 文字も違わなかった. `layout` を使う 2 本は, 同梱の glslang でも Homebrew と同じく構文エラーになった.
+M1 で確かめた結果 (検証済み). 本物の super_polygons (修正前) も, 字句検査を外すと Homebrew の SPIRV-Cross が `vertex0` に改名し, Metal でもコンパイルできた. 字句検査を入れると `stage: lint` で失敗する (統合テストに両方を残した). VDMX で落ちた理由は SPIRV-Cross の版の違いだった (2026-11-04, 検証済み). VDMX と同じ同梱の dylib (10 章) を使い捨てのプログラムから呼ぶと, 同じ GLSL から `vertex` を改名しない MSL が出て, Metal が VDMX と同じ `expected unqualified-id` で落とした. 違いは `vertex` の 5 行だけだった. 同じ比べ方で呼び出し元のシェーダー 400 本近くとテストのフィクスチャのうち, glslang を通る 408 本の fragment の MSL を比べると, この 1 本以外は 1 文字も違わなかった. `layout` を使う 2 本は, 同梱の glslang でも Homebrew と同じく構文エラーになった.
 
 ISFMSLKit の `extern/` には, VIDVOX がビルドした glslang と SPIRV-Cross の dylib (arm64 と x86_64, macOS 15 以上) が同梱されている. VDMX6 Plus 6.1.3.6 はこれと同じものを載せている (10 章). 配布物には使わず, 組み込んだ版 (2.6) の出力を確かめる基準にだけ使った.
 
@@ -85,8 +86,8 @@ ISFMSLKit の `extern/` には, VIDVOX がビルドした glslang と SPIRV-Cros
   - glslang は `StandAlone.cpp` の `CompileAndLinkShaderUnits` が `-G --amb --aml --stdin -S <stage>` で通る道を, 同じ順で API に写した (`glslang.cpp`). 入力の名前は `stdin` にするので, エラーは VDMX と同じ `ERROR: stdin:<行>:` になる. ログはラッパーと同じく, CLI が標準出力に出すもの (ファイル名の行を除く) にする.
   - SPIRV-Cross は CLI の `main.cpp` を翻訳単位ごと取り込み, `compile_iteration` を `--rename-entry-point main <名前> <stage> --msl` と同じ引数で呼ぶ (`spirv_cross.cpp`). CLI は引数の既定値から CompilerMSL の設定を数十個決めるので, 写さずに CLI のコードをそのまま使う.
   - CMake が作る `glslang/build_info.h` (14.3.0) と `glslang/glsl_intrinsic_header.h` は `Sources/CToolchain/generated/` に置いた.
-- 確かめたこと. vjcomponents の全シェーダー (rejected を含む) とテストのフィクスチャを, isftool と bundled の dylib (使い捨てのプログラムから呼んだ) の両方に通し, vert と frag の 816 の stage で SPIR-V と MSL が 1 バイトまで一致した. `layout` を使う 2 本はどちらも glslang で同じエラーになった. テストは並列に流しても通る.
-- 効果. 162 本の check がデバッグビルドで約 3 秒になった (外部コマンドでは 1 本に約 0.3 秒かかっていた). `vertex` を持つ super_polygons (修正前) は Metal の段で VDMX と同じ `expected unqualified-id` になる.
+- 確かめたこと. 呼び出し元の全シェーダーとテストのフィクスチャを, isftool と bundled の dylib (使い捨てのプログラムから呼んだ) の両方に通し, vert と frag の 816 の stage で SPIR-V と MSL が 1 バイトまで一致した. `layout` を使う 2 本はどちらも glslang で同じエラーになった. テストは並列に流しても通る.
+- 効果. 160 本ほどの check がデバッグビルドで約 3 秒になった (外部コマンドでは 1 本に約 0.3 秒かかっていた). `vertex` を持つ super_polygons (修正前) は Metal の段で VDMX と同じ `expected unqualified-id` になる.
 - `--glslang` と `--spirv-cross` は消した. `isftool --version` は組み込んだ版と, 合わせた VDMX の版 (VDMX6 Plus 6.1.3.6) を出す.
 - 字句検査 (`stage: lint`, `--no-lint`) は外した (2026-11-05, ユーザーの判断). Homebrew の版との違いを補うために入れたものだった. 同じ版を組み込んだ今は Metal が VDMX と同じものを落とすので, 字句検査が落とせるのは Metal を通ったシェーダー, つまり VDMX でも動くシェーダーだけになる.
 
@@ -265,12 +266,11 @@ isftool --version
 
 | オプション | 既定 | 意味 |
 |---|---|---|
-| `--size WxH` | `1920x1440` | 出力サイズ. vjcomponents のプリセットに合わせた既定 |
+| `--size WxH` | `1920x1440` | 出力サイズ. 呼び出し元のプリセットに合わせた既定 |
 | `--fps N` | `60` | 疑似時間の刻み. `TIME = i / N`, `TIMEDELTA = 1 / N`, `FRAMEINDEX = i` |
 | `--set NAME=VALUE` | なし | 入力を固定値にする (複数可). `color` は `r,g,b,a`, `point2D` は `x,y` |
-| `--levels MODE` | `default` | render での Level 入力の与え方. 6 章 |
-| `--recording FILE` | なし | 録音ファイル. 指定すると `recording` モードが使える. vjcomponents では `recordings/vdmx_mic.jsonl` |
-| `--level-pattern REGEX` | `^(Level\|Lv)(?![a-z]\|Gain$)` | Level 入力とみなす名前 |
+| `--feed-envelope` | off | パターンに合う入力に envelope を流し込む. render は envelope で描き, bench は 6 章の 3 つのモードを測る |
+| `--feed-envelope-pattern REGEX` | `^(Level\|Lv)(?![a-z]\|Gain$)` | envelope を流し込む float 入力の名前. `--feed-envelope` が無いと使い方の誤り. info でも使え, 合う入力に `[envelope]` と付く |
 | `--images DIR` | シェーダーの場所から解決 | IMPORTED の基準ディレクトリを上書き |
 
 計測オプション (bench).
@@ -280,30 +280,29 @@ isftool --version
 | `--warmup N` | `60` | 計測前に空回しするフレーム数 (持続バッファが溜まるまで) |
 | `--frames N` | `240` | 計測するフレーム数 |
 | `--repeat N` | `1` | 計測を何回繰り返して中央値を取るか |
-| `--modes LIST` | `default,max`. `--recording` があれば `default,recording,max` | 6 章のモードをカンマ区切りで |
 | `--results FILE` | `.isftool/results.jsonl` | 結果を 1 行 1 計測で追記する |
 | `--compare` | on | 同じシェーダー, 同じ条件の前回の結果との差 (%) を表に出す |
 | `--json` | off | 表の代わりに JSON を標準出力に出す |
-| `--sort KEY` | `median` | 表の並び順 |
 
 終了コード. 全部成功で 0, いずれかのシェーダーがコンパイルや描画に失敗したら 1, 使い方の誤りは 2.
 
-## 6. 入力の与え方 (Level モード)
+## 6. 入力の与え方 (envelope)
 
 GPU コストは入力の値で変わる. Level が 0 (無音または未割り当て) だと描画を省くシェーダーが多く, 実際より軽く出る. 本番でカクつくのは音が大きく描く要素が最も多い瞬間なので, 複数のモードで測る.
 
-- Level 入力とは `--level-pattern` に合う名前の float 入力. vjcomponents の規約では `LevelGain` は Level 入力ではない (パターンが除外する).
-- モード.
-  - `default`: 全入力が DEFAULT. Level 入力も DEFAULT (vjcomponents では 0). 録音ファイルが無くても使えるので, 単独の CLI としての既定はこれと `max`.
-  - `recording`: Level 入力を定義順に `/Filter 1`, `/Filter 2`, ... に割り当て, 足りなければ `n % count + 1` で折り返す (vjcomponents の `tools/vj_controller.py` と preview と同じ). 値は録音を疑似時間で引いた値 × (MAX − MIN) + MIN. ほかの入力は DEFAULT.
-  - `max`: Level 入力を MAX にする. ほかは DEFAULT.
-- 録音ファイルの形式 (JSON Lines): `{"t": 0.0001, "address": "/Filter 3", "value": 0.768}`. `t` は秒. アドレスごとに時系列を作り, 時刻 `t` 以前の最後の値を使う (直前値保持). 録音の長さで繰り返す. vjcomponents の `preview/audio.ts` の `sampleTrack` が参照実装.
+- 対象の入力とは `--feed-envelope-pattern` に合う名前の float 入力. 既定のパターンは呼び出し元の Level 入力の規約に合わせてあり, `LevelGain` は除外する.
+- 名前 (2026-11-06, ユーザーの判断). 流し込む値は音を解析した帯域ごとの大きさなので envelope と呼ぶ. 音声データそのものと取り違えないよう audio は避け, VDMX の Filter という概念も CLI には出さない. `feed X to Y` の語順に合わせて `--feed-envelope` とし, 対象を選ぶ正規表現は `--feed-envelope-pattern` (既定値あり) にした. オンとオフを決めるのは `--feed-envelope` だけで, パターンだけを渡すと使い方の誤りにする.
+- モード. `--feed-envelope` が無ければ `default` だけを測る. あれば bench は次の 3 つを測り, render は `envelope` で描く.
+  - `default`: 全入力が DEFAULT. 対象の入力も DEFAULT (呼び出し元では 0).
+  - `envelope`: 対象の入力を定義順に envelope の帯域 1, 2, ... に割り当て, 足りなければ `n % count + 1` で折り返す (呼び出し元が VDMX の Filter に割り当てる規則と同じ). 値は envelope を疑似時間で引いた値 × (MAX − MIN) + MIN. ほかの入力は DEFAULT.
+  - `max`: 対象の入力を MAX にする. ほかは DEFAULT.
+- envelope の中身. VDMX の Audio Analysis をマイクで 30 秒, OSC で記録した `/Filter 1` から `/Filter 16` の JSON Lines を `Scripts/gen_envelope_data.py` で `Sources/ISFKit/EnvelopeData.swift` に変換して組み込んだ. 時刻は 0.1 ms 単位, 値は Float32 で, 元の値をそのまま持つ. SwiftPM のリソースはバイナリの隣にバンドルが要り, 1 ファイルで配れなくなるので使わない. 帯域ごとに時刻以前の最後の値を使い (直前値保持), envelope の長さで繰り返す. 呼び出し元の preview と同じ引き方. ファイルを差し替えるオプションは今は無い.
 - `event` 入力は常に false. `--set NAME=1` で毎フレーム true にできる.
 - `--set` は全モードで最後に適用する.
 - 実装して分かったこと (M4).
-  - Filter の数. vj_controller は VDMX のプロジェクトの Audio Analysis にある Filter の数で折り返すが, isftool にはプロジェクトが無いので, 録音に出てくる `/Filter N` のアドレスの数を使う (vdmx_mic.jsonl は 16).
-  - 入力の値が毎フレーム変わる recording モードでは, パスの大きさも毎フレーム評価し直す (CPU の時間で, GPU の時間には入らない).
-  - `polar_waveform` と `data_matrix` は Level で描く絵は変わるが, GPU の時間は 3 つのモードで同じだった (9 章の M4). 画素ごとの計算量が Level に依らない作りのため. Level で重さが変わるのは, Level に応じて描く要素の数を増やすシェーダー (ripple_shapes の Shard など).
+  - 帯域の数. 呼び出し元は VDMX のプロジェクトの Audio Analysis にある Filter の数で折り返すが, isftool にはプロジェクトが無いので, envelope の帯域の数 (16) を使う.
+  - 入力の値が毎フレーム変わる envelope モード (当時の名前は recording) では, パスの大きさも毎フレーム評価し直す (CPU の時間で, GPU の時間には入らない).
+  - Level で描く絵は変わっても, GPU の時間は 3 つのモードで同じシェーダーが多い (9 章の M4). 画素ごとの計算量が Level に依らない作りのため. Level で重さが変わるのは, Level に応じて描く要素の数を増やすシェーダー.
 - `image`, `audio`, `audioFFT` 型の入力には, ISFMSLScene と同じく 0 で埋めた 64x64 の BGRA8 テクスチャを渡す (検証済み. ISFMSLScene は値の無い画像と音声の入力にこれを渡す). VDMX は実際の音声を渡すので, bench の表には注記する.
 
 ## 7. 処理の流れ
@@ -313,13 +312,13 @@ GPU コストは入力の値で変わる. Level が 0 (無音または未割り�
 - 読み込みは ISFGLSLGenerator の `VVISF::CreateISFDocRef(path, true)` に任せる (メタデータの JSON, INPUTS, PASSES, IMPORTED, 同名の `.vs`). 例外 (`VVISF::ISFErr`) は check の失敗 (`stage: parse`) として報告する.
 - 入力の一覧, パス, 画像は `ISFDoc` の `inputs()`, `renderPasses()`, `imageImports()` から取る. Level 入力の判定など isftool 独自の処理はその上に載せる.
 - `.vs` の扱いも ISFGLSLGenerator に任せる (`hasCustomVertShader()`).
-- `WIDTH` / `HEIGHT` は ISF の式. ISFGLSLGenerator の `ISFPassTarget::evalTargetSize(width, height, symbols)` が exprtk で評価する (入力名を変数として渡す). 自前の評価器は書かない. vjcomponents で実際に使われている形 (2026-11-04 に grep で確認, rejected を含む).
+- `WIDTH` / `HEIGHT` は ISF の式. ISFGLSLGenerator の `ISFPassTarget::evalTargetSize(width, height, symbols)` が exprtk で評価する (入力名を変数として渡す). 自前の評価器は書かない. 呼び出し元で実際に使われている形 (2026-11-04 に grep で確認).
   - 数値: `"1"`, `"4"`, `"48"`, `"512"`, `"1100"` など
   - 出力サイズ: `"$WIDTH"`, `"floor($WIDTH/2.0)"`
   - 入力値を含む: `"floor($WIDTH/$CellSize)"`, `"floor($HEIGHT/($CellSize*0.866))"`
   - 関数の入れ子: `"min($WIDTH, 640)"`, `"max(1, floor($HEIGHT * min(1, 640 / $WIDTH)))"`
 - 入力値で大きさが変わるので, ISFMSLKit と同じく毎フレーム評価し, 大きさが変わったらテクスチャを作り直す. 持続バッファの初期内容は 7.3 を参照.
-- vjcomponents に `.vs` を持つシェーダーと `FLOAT: true` のパスは今のところ無い (2026-11-04 確認). `audio` 型の入力を持つのは `isfs/sprites/fullmoon.fs` と `isfs/signal/multibandwaves.fs`. IMG 系の関数は `IMG_PIXEL` `IMG_NORM_PIXEL` `IMG_SIZE` `IMG_THIS_PIXEL` が使われ, `IMG_THIS_NORM_PIXEL` は使われていない.
+- 呼び出し元に `.vs` を持つシェーダーと `FLOAT: true` のパスは今のところ無い (2026-11-04 確認). `audio` 型の入力を持つのは 2 本. IMG 系の関数は `IMG_PIXEL` `IMG_NORM_PIXEL` `IMG_SIZE` `IMG_THIS_PIXEL` が使われ, `IMG_THIS_NORM_PIXEL` は使われていない.
 
 ### 7.2 check
 
@@ -340,7 +339,7 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 - uniform: ISFGLSLGenerator が返す大きさを 48 の倍数に切り上げたバイト列を作る. 先頭 48 バイトが `ISFShaderRenderInfo`, 画像ごとの `ISFShaderImgInfo` と入力の値は `offsetInBuffer()` の位置に書く. パスごとに `PASSINDEX` と `RENDERSIZE` を書き換え, 新しい `MTLBuffer` にコピーして頂点とフラグメントの両方に渡す. 1 つの `MTLBuffer` を使い回すと, GPU が実行する時点の値 (後のパスの `PASSINDEX` など) を読んでしまう. 4 KB 未満なら `setVertexBytes` / `setFragmentBytes` でもよい.
 - `ISFShaderImgInfo`: `rect` はテクスチャの中の使う範囲 (普通は 0,0,1,1), `size` はそのピクセル数, `flip` は普通のテクスチャで 1 (2.5).
 - パスのテクスチャ: 8 bit は `bgra8Unorm`, `FLOAT` は `rgba32Float` (検証済み. `VVMTLPool rgbaFloatTexSized` の形式). 最後のパスが `FLOAT` のとき, ISFMSLScene は 8 bit の出力テクスチャ (RENDERSIZE の大きさ) に直接描かず, VVMetalKit の `CopierMTLScene` で写す. ISFMSLScene は `SizingModeFit` を渡すが, `CopierMTLScene` はこの値を使わず, 元の画像全体を出力全体に引き伸ばす (compute シェーダーで, 線形補間, 端はクランプ, 書き込むときに 0 から 1 に収まる). isftool はこの compute シェーダーを移して同じように写す (ソースで確かめた. GPU 時間にこの写しも入る).
-  - 検査用シェーダー (`float_accumulate.fs`, `byte_accumulate.fs`, `float_output.fs`) で確かめた. 毎フレーム 0.001 を足すと, FLOAT のバッファは 100 フレームで 0.1 (8 bit で 26) になり, 8 bit のバッファは 0 のまま. 半分の幅の FLOAT の最後のパスは, 出力の大きさに引き伸ばされる. VDMX (120 fps) でも同じだった (検証済み). FLOAT のバッファは 600 フレームごとに 0 から 6 割くらいの灰色まで明るくなり, 8 bit のバッファは黒のまま, 半分の幅の FLOAT の最後のパスは赤が出力のちょうど左半分を占め, 帯は出なかった (fit ではなく引き伸ばし). 検査用シェーダーは VDMX で見られるよう 600 フレームごとにやり直す. vjcomponents には 8 bit 前提の値の詰め方をしているシェーダーがある.
+  - 検査用シェーダー (`float_accumulate.fs`, `byte_accumulate.fs`, `float_output.fs`) で確かめた. 毎フレーム 0.001 を足すと, FLOAT のバッファは 100 フレームで 0.1 (8 bit で 26) になり, 8 bit のバッファは 0 のまま. 半分の幅の FLOAT の最後のパスは, 出力の大きさに引き伸ばされる. VDMX (120 fps) でも同じだった (検証済み). FLOAT のバッファは 600 フレームごとに 0 から 6 割くらいの灰色まで明るくなり, 8 bit のバッファは黒のまま, 半分の幅の FLOAT の最後のパスは赤が出力のちょうど左半分を占め, 帯は出なかった (fit ではなく引き伸ばし). 検査用シェーダーは VDMX で見られるよう 600 フレームごとにやり直す. 呼び出し元には 8 bit 前提の値の詰め方をしているシェーダーがある.
 - 持続バッファの初期内容 (未検証). ISFGLSLGenerator の `ISFPassTarget.hpp` のコメントには「作ったときに黒で埋める必要がある」とあるが, ISFMSLKit はテクスチャを VVMetalKit の `VVMTLPool` から取り, ロードアクションも `dontCare` で, VVMetalKit のソースにテクスチャを消す処理は見当たらなかった. つまり VDMX でも 1 フレーム目の持続バッファの中身は不定かもしれない. isftool は結果を毎回同じにするため黒 (0,0,0,0) で埋める. 大きさが変わったバッファも作り直して黒から始める (ISFMSLScene も大きさが合わなければ新しいテクスチャを取る). 計測には影響しないが, render の PNG を VDMX と比べるとき (M3) は最初の数フレームが違いうることに注意する.
 - 読み書きの入れ替え (検証済み). ISFMSLScene はパスごとに新しいテクスチャに描き, 描き終えたらそれをパスの画像にする. 描いている間に読めるのは前の画像なので, 持続バッファは自分の前のフレームを読める. isftool はパスごとに 2 枚を持って入れ替える. TARGET のあるパスは, 描かれる前でも前のフレームの画像が見える.
 - 持続でないパスの扱い. ISFMSLScene はフレームの終わりに画像を手放し, 次のフレームでプールから取り直す (中身は不定). isftool は前のフレームの画像を持ち越す. 描く前に読むシェーダーでなければ結果は変わらない.
@@ -349,14 +348,14 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 - サンプラー: 正規化座標, 線形補間, 端はクランプ.
 - IMPORTED の画像は ISFMSLScene と同じく `MTKTextureLoader` で, `SRGB: false` を付けて読む (検証済み). 読み込んだテクスチャは 1 行目が画像の上になる.
 - 上下の向き (M2 と M3 で必ず確かめる).
-  - 形の向き: 3.1 の射影では `VERTEXDATA (0,0)` が NDC の y = +1 (上) に来るので, 正規化座標の y = 1 が出力 PNG の一番上の行になる見込み. M2 で spiral_gratings が preview と上下反転して出たら, 頂点の並べ方が間違っている. テクスチャの反転で補わないこと.
+  - 形の向き: 3.1 の射影では `VERTEXDATA (0,0)` が NDC の y = +1 (上) に来るので, 正規化座標の y = 1 が出力 PNG の一番上の行になる見込み. M2 で preview と上下反転して出たら, 頂点の並べ方が間違っている. テクスチャの反転で補わないこと.
   - テクスチャの向き (検証済み, M3). ISFMSLScene が使うテクスチャ (プールのものも `MTKTextureLoader` のものも) は `flipV` が NO なので, `_X_flip` は常に 1 になる. 生成 GLSL は flip が 1 のとき y を 1 − y にして読むので, 左下原点の ISF の座標で, 1 行目が上のテクスチャを正しく読める. 次の 2 本で確かめ, 統合テストに残した.
   - バッファ: 1 フレーム目に上半分だけ白を書き, 2 フレーム目以降は自分のバッファを読んで写すシェーダー (`Tests/ISFKitTests/Fixtures/persistent_orientation.fs`. 左半分は `IMG_THIS_PIXEL`, 右半分は `IMG_NORM_PIXEL`). 10 フレーム後も上半分が白だった.
   - 画像: 上半分が白の PNG を IMPORTED で読んで表示するシェーダー (`imported_orientation.fs` と `top_white.png`. 左半分は `IMG_NORM_PIXEL`, 右半分は `IMG_PIXEL`). 上半分が白だった.
 - 実装して分かったこと (検証済み, M2).
   - 向き. 3.1 の射影と ISFMSLScene の頂点の並び `(0,0) (0,H) (W,0) (W,H)` をそのまま使うと, 正規化座標の y = 1 が PNG の一番上の行, x = 1 が一番右の列になった. どこにも反転は要らない. `Tests/ISFKitTests/Fixtures/orientation.fs` と統合テスト `testRenderFacesTheSameWayAsISF` に残した.
-  - 頂点の記述子. ISFMSLKit は `layouts[1]` に stride を書くが, 頂点データの番号は「頂点関数の最大のバッファ番号 + 1」なので, 番号が 1 でないシェーダーでは合わない. isftool は同じ番号の `layouts` に書く. vjcomponents の全シェーダーで番号は 1 なので結果は変わらない.
-  - `DATE` は ISFMSLScene と同じくフレームごとに手元の時計から入れる. vjcomponents で `DATE` を使うシェーダーは無いので, PNG の再現性には影響しない.
+  - 頂点の記述子. ISFMSLKit は `layouts[1]` に stride を書くが, 頂点データの番号は「頂点関数の最大のバッファ番号 + 1」なので, 番号が 1 でないシェーダーでは合わない. isftool は同じ番号の `layouts` に書く. 呼び出し元の全シェーダーで番号は 1 なので結果は変わらない.
+  - `DATE` は ISFMSLScene と同じくフレームごとに手元の時計から入れる. 呼び出し元で `DATE` を使うシェーダーは無いので, PNG の再現性には影響しない.
   - 入力の値は ISFGLSLGenerator の `currentVal()` (読み込んだ直後は DEFAULT) から始め, `event` は false, 最後に `--set` を当てる (6 章).
 - 出力は `--size` のテクスチャ. render は PNG に書き出す (straight alpha. ISF の出力は RGB が 0 のところ alpha 0 という前提).
 
@@ -371,7 +370,7 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 - `compile_ms.metal` は 2 回目以降に速く出る. OS が Metal のコンパイル結果をキャッシュするため. 初回の値とキャッシュ後の値を混同しない.
 - 1 本ずつ測る. 測る順番の影響を減らすため, シェーダーを切り替えたら最初の数フレームを捨てる (warmup に含まれる).
 - 実装して分かったこと (検証済み, M4).
-  - GPU のクロック. check で glslang と SPIRV-Cross を動かす数百 ms の間に GPU のクロックが下がり, 軽いシェーダーでは warmup の 60 フレームでは戻らない. spiral_gratings は 1 回目の計測だけが 0.30 ms で, 2 回目以降は 0.17 ms だった. そこで計測の前に, 捨てる renderer で 0.5 秒描き続けて GPU を起こす. 何もしないシェーダーも 0.16 ms から 0.036 ms になった.
+  - GPU のクロック. check で glslang と SPIRV-Cross を動かす数百 ms の間に GPU のクロックが下がり, 軽いシェーダーでは warmup の 60 フレームでは戻らない. あるシェーダーは 1 回目の計測だけが 0.30 ms で, 2 回目以降は 0.17 ms だった. そこで計測の前に, 捨てる renderer で 0.5 秒描き続けて GPU を起こす. 何もしないシェーダーも 0.16 ms から 0.036 ms になった.
   - `--repeat`. 回ごとに renderer を作り直し, フレーム 0 から同じフレームを測る. 時刻を続けて測ると, 時間で描く量が変わるシェーダー (line_space は線が増える) の回ごとの差が中身の差になってしまうため. 表には回ごとの中央値の幅 (最大 − 最小) を中央値で割った値を `spread` として出す.
   - 集計. 中央値は個数が偶数なら真ん中の 2 つの平均. p95 は nearest rank (`ceil(0.95 n)` 番目) で, 必ず測った値のどれかになる. 標準偏差は母標準偏差 (測ったフレームが全体で, 標本ではないため).
   - `compile_ms.metal` は最初の renderer を作る時間 (MSL のコンパイルとパイプラインの作成).
@@ -382,8 +381,8 @@ ISFMSLKit の `ISFMSLScene.mm` (2.5) に合わせる. 迷ったらそのソー�
 - 結果ファイル `.isftool/results.jsonl` に 1 計測 1 行で追記する.
 
 ```json
-{"at":"2026-11-04T05:00:00Z","shader":"isfs/lines/random_line.fs","sha256":"<.fs の内容のハッシュ>",
- "git":{"commit":"d7b859b","dirty":true},"size":[1920,1440],"fps":60,"mode":"max",
+{"at":"2026-11-04T05:00:00Z","shader":"shaders/line_space.fs","sha256":"<.fs の内容のハッシュ>",
+ "git":{"commit":"1a2b3c4","dirty":true},"size":[1920,1440],"fps":60,"mode":"max",
  "warmup":60,"frames":240,"repeat":1,
  "ms":{"median":3.21,"p95":3.40,"min":3.10,"mean":3.22,"stddev":0.05},
  "compile_ms":{"glsl":12.0,"spirv_cross":8.0,"metal":40.0},
@@ -456,12 +455,12 @@ isftool/
 ### M1: check
 - ISFGLSLGenerator で GLSL を作り, 4 章の経路で Metal までコンパイルする. 7.2 の unbound 検査も入れる (字句検査も入れたが, 2.6 で外した).
 - 完了条件.
-  0. vjcomponents の line_space の修正前の版 (下の 2.) で `dump glsl-frag` した出力が, 3 章の写し (VDMX のエラー画面) と空白を除いて一致する. ISFGLSLGenerator の組み込みが VDMX と同じものを出す証拠になる.
-  1. vjcomponents の `isfs/lines/line_space.fs` (現在の版) が全段成功.
-  2. line_space の修正前の版が `stage: glsl` で失敗し, メッセージに `unexpected LAYOUT` を含む. 取り出し方: vjcomponents で `git show d7b859b~1:isfs/lines/line_space.fs`.
-  3. thin_barcode の修正前の版が同じく失敗する (`git show 2798e10~1:isfs/lines/thin_barcode.fs`). 入力名が原因の例.
-  4. super_polygons の修正前の版 (`git show 5d195dd~1:isfs/depth/super_polygons.fs`. 関数 `vec2 vertex(float column, float row)` を持つ) が `stage: lint` で失敗する. あわせて, 字句検査を外したときに spirv-cross と Metal の段で通るか落ちるかを記録し, 2.5 の未解明の点に結果を書き足す.
-  5. vjcomponents の `isfs/` 以下 (rejected を除く) 全部を check して, 失敗の一覧を出す. VDMX で普通に読み込めているシェーダーが失敗したら, isftool 側の呼び出し方 (引数, 組み込み方) をまず疑う.
+  0. line_space の修正前の版 (下の 2.) で `dump glsl-frag` した出力が, 3 章の写し (VDMX のエラー画面) と空白を除いて一致する. ISFGLSLGenerator の組み込みが VDMX と同じものを出す証拠になる.
+  1. line_space (現在の版, `Tests/ISFKitTests/Fixtures/line_space.fs`) が全段成功.
+  2. line_space の修正前の版 (`line_space_layout.fs`) が `stage: glsl` で失敗し, メッセージに `unexpected LAYOUT` を含む.
+  3. thin_barcode の修正前の版 (`thin_barcode_layout.fs`) が同じく失敗する. 入力名が原因の例.
+  4. super_polygons の修正前の版 (`super_polygons_vertex.fs`. 関数 `vec2 vertex(float column, float row)` を持つ) が `stage: lint` で失敗する. あわせて, 字句検査を外したときに spirv-cross と Metal の段で通るか落ちるかを記録し, 2.5 の未解明の点に結果を書き足す.
+  5. 呼び出し元のシェーダー全部を check して, 失敗の一覧を出す. VDMX で普通に読み込めているシェーダーが失敗したら, isftool 側の呼び出し方 (引数, 組み込み方) をまず疑う.
   6. エラーの行番号が元の .fs の行と一致する.
   7. `--reflect` で得た `VVISF_UNIFORMS` のオフセットが, ISFGLSLGenerator の `offsetInBuffer()` と一致する (数本で確かめてテストに残す).
 
@@ -469,43 +468,43 @@ isftool/
 - 結果 (2026-11-04).
   - 0: 3 章の写し (`Tests/ISFKitTests/Fixtures/vdmx_line_space.*.glsl`) と, コメントと空白を除いて一致した. 生成物には 3.1 に無いコメント行 (`//mat4 projectionMatrix ...`) があるが, エラー画面の写しを整えたときに落ちたものとみなした.
   - 1 から 4, 6, 7: 統合テストで確かめた. 2 は生成 GLSL の 111 行目, 元の .fs の 90 行目. 3 は入力名がブロックのメンバーになるので頂点シェーダーで先に落ちる (生成 GLSL の 21 行目. 元の .fs の行は無い).
-  - 5: rejected を除く 162 本のうち 159 本が成功, 3 本が失敗.
-    - `depth/nested_frames_3d.fs`: `stage: metal`. 関数名 `level` が Metal の `metal::level` とぶつかる (`reference to 'level' is ambiguous`). Homebrew の SPIRV-Cross は `level` を改名しない. VDMX でも同じエラー (`reference to 'level' is ambiguous`, 同じ行番号) で読み込めなかった. VDMX が出した MSL は isftool の `dump msl-frag` と行番号まで一致した.
-    - `lines/structure.fs` と `signal/ridge_lines.fs`: `stage: lint`. 変数名 `visible`. SPIRV-Cross は改名せず, Metal もコンパイルできた. VDMX では 2 本ともエラーにならなかった. そこで `visible` を字句検査の一覧から外した. `level` は Metal の段で VDMX と同じエラーになるので一覧に足さない. 外した後は 162 本のうち 161 本が成功する.
+  - 5: 162 本のうち 159 本が成功, 3 本が失敗.
+    - 1 本は `stage: metal`. 関数名 `level` が Metal の `metal::level` とぶつかる (`reference to 'level' is ambiguous`). Homebrew の SPIRV-Cross は `level` を改名しない. VDMX でも同じエラー (同じ行番号) で読み込めなかった. VDMX が出した MSL は isftool の `dump msl-frag` と行番号まで一致した.
+    - 2 本は `stage: lint`. 変数名 `visible`. SPIRV-Cross は改名せず, Metal もコンパイルできた. VDMX でもエラーにならなかったので, `visible` を字句検査の一覧から外した. 外した後は 162 本のうち 161 本が成功する.
 
 ### M2: 1 パスの描画
 - 1 パスのシェーダーを `render` で PNG にする.
-- 完了条件: vjcomponents の `isfs/geometry/spiral_gratings.fs` などパスの無いシェーダーを 1 枚出し, preview で同じ時刻を見たものと形が同じ (上下左右の向きを含む). 半画素の差は許す.
+- 完了条件: パスの無いシェーダーを 1 枚出し, preview で同じ時刻を見たものと形が同じ (上下左右の向きを含む). 半画素の差は許す.
 - 結果 (2026-11-04).
-  - preview には時刻を止めたり指定したりする方法が無い. spiral_gratings は時刻を `TIME * Speed` でしか使わないので, `--set Speed=0` で時刻に依らない絵にして比べる. preview (1280x720, Speed 0) の画面と `render --size 1280x720 --set Speed=0` の PNG を並べ, 2 つの渦の中心の位置 (幅と高さに対する割合で, 上の中心が約 (0.55, 0.375), 下の中心が約 (0.46, 0.61), 左上が原点) と巻く向きが一致した. 上下左右とも反転していない (検証済み). 比べたのは目で見た形で, 画素ごとの差は取っていない.
-  - rejected を除く 162 本を `--at 5` で描くと, 139 本が PNG になった. 残りは TARGET のあるパスを持つ 18 本と, 画像か音声の入力を持つ 4 本 (どちらも M3 まで描かずに理由を出して終わる), それと Metal で落ちる nested_frames_3d.
-  - 描けた 139 本のうち strobe 系の 23 本は全面が透明だった. Level 入力が DEFAULT の 0 だと何も描かないシェーダーで, strobe_lamps は `--set Level1=1` から `Level8=1` で描けた. 6 章の `max` モードが要る理由そのもの.
+  - preview には時刻を止めたり指定したりする方法が無いので, 時刻を速さの入力との積でしか使わないシェーダーを選び, その入力を 0 にして時刻に依らない絵で比べた. 形の位置と巻く向きが一致し, 上下左右とも反転していない (検証済み). 比べたのは目で見た形で, 画素ごとの差は取っていない.
+  - 162 本を `--at 5` で描くと, 139 本が PNG になった. 残りは TARGET のあるパスを持つものと, 画像か音声の入力を持つもの (どちらも M3 まで描かずに理由を出して終わる), それと Metal で落ちる 1 本.
+  - 描けたもののうち 23 本は全面が透明だった. Level 入力が DEFAULT の 0 だと何も描かないシェーダーで, Level を 1 にすると描けた. 6 章の `max` モードが要る理由そのもの.
 
 ### M3: 複数パス, 持続バッファ, 画像
 - 7.3 の向きの検査用シェーダー 2 本で `_X_flip` の扱いを決め, テストに残す.
-- 完了条件: `line_space.fs` (幅 4 の持続バッファ), `ripple_shapes.fs` (幅 48 の持続バッファと IMPORTED 画像), `random_line.fs` (出力と同じ大きさの持続バッファ) が, 数十フレーム進めた PNG で preview と同じように見える.
+- 完了条件: 幅 4 の持続バッファ (line_space), 幅 48 の持続バッファと IMPORTED 画像, 出力と同じ大きさの持続バッファを持つシェーダーが, 数十フレーム進めた PNG で preview と同じように見える.
 - 結果 (2026-11-04).
   - `render` に `--frames N` を足した. `--at` の時刻から N 枚を書き出し, それより前のフレームも 0 から描く (持続バッファを溜めるため). 1 枚で `--out` が `.png` ならそのファイルに, それ以外は `--out` をディレクトリとして `<名前>_<FRAMEINDEX 5 桁>.png` に書く.
-  - 3 本とも `--at 3 --size 1280x720` (180 フレーム) で描き, preview の画面と見比べた. line_space は縦の細い線が並び, random_line は幅と明るさの違う縦の帯が並ぶ. ripple_shapes は Volume を preview が録音から与えるので `--set LvVolume=1` で描き, Circle では同心円, Line Circle (`--set Switch=4`) では IMPORTED 画像の線の円が広がった. 元の画像の内側の円は下が切れていて, isftool の PNG でも preview でも下が切れている (画像が上下反転していない). 比べたのは目で見た形で, 時刻と Level の値は preview と揃えられないので, 画素ごとの差は取っていない.
-  - rejected を除く 162 本を `--at 1` で描くと, 161 本が PNG になった (残りは Metal で落ちる nested_frames_3d). 全面が透明なのは 24 本で, strobe 系 23 本と ripple_shapes. どれも Level 入力が DEFAULT の 0 のとき何も描かない.
+  - 3 本とも `--at 3 --size 1280x720` (180 フレーム) で描き, preview の画面と見比べて同じ形になった. IMPORTED 画像は上下反転していない. 比べたのは目で見た形で, 時刻と Level の値は preview と揃えられないので, 画素ごとの差は取っていない.
+  - 162 本を `--at 1` で描くと, 161 本が PNG になった (残りは Metal で落ちる 1 本). 全面が透明なのは 24 本で, どれも Level 入力が DEFAULT の 0 のとき何も描かない.
 
 ### M4: bench
 - 7.4 と 7.5 と 6 章を実装する.
 - 完了条件.
   1. 何もしないシェーダーが 1 ms を大きく下回る.
   2. 同じシェーダーを 3 回測って中央値のばらつきが 5% 以内.
-  3. vjcomponents で重いと分かっているものが上位に来る. 参考: preview (1280x720, WebGL) では ripple_shapes の Shard が約 13 fps, gravity_flow が約 17 fps, randomgravities が約 20 fps, Circle の ripple_shapes が約 68 fps だった.
-  4. `--modes recording,max` で, Level で描く要素の数が変わるシェーダー (例: `isfs/geometry/ripple_shapes.fs` の Shard, `--set Switch=5`) は max のほうが重く出る. 当初の例の polar_waveform と data_matrix は, 描く絵は変わっても GPU の時間が変わらないので外した (2026-11-04, ユーザーの判断).
+  3. preview で重いと分かっているものが上位に来る.
+  4. Level で描く要素の数が変わるシェーダーは, 当時の `recording` と `max` のモードのほうが重く出る. 描く絵は変わっても GPU の時間が変わらないシェーダーは例から外した (2026-11-04, ユーザーの判断).
 - 結果 (2026-11-04, 1920x1440 は既定の大きさ).
   1. 何もしないシェーダー (`Tests/ISFKitTests/Fixtures/empty.fs`) は 1920x1440 で 0.036 ms.
-  2. `--repeat 3` で, spiral_gratings は 3 回とも 0.174 ms, line_space は 0.466, 0.487, 0.487 ms (幅 4.4%), randomgravities は 76.99, 77.13, 77.21 ms (幅 0.3%). 計測の前に GPU を起こすようにする前は, 軽いシェーダーの 1 回目だけが倍近く遅かった (7.4).
-  3. 1280x720 の max モードで, gravity_flow 28.56 ms, randomgravities 26.29 ms, ripple_shapes の Shard (`--set Switch=5`) 10.67 ms, Circle (`--set Switch=1`) 0.27 ms. 重い 3 本が上位に来て, Circle は軽い. 3 本の中の順番は preview (Shard が最も重い) と違う. preview は WebGL で, Level も録音から与えている.
-  4. polar_waveform (0.76 ms) と data_matrix (0.17 ms) は default, recording, max の 3 つで同じだった. Level の値は描画に届いている (3 つのモードで PNG が違う) が, 画素ごとの計算量は Level に依らない. strobe_lamps と strobe_rings も同じ. 一方 ripple_shapes の Shard は default 0.51 ms, recording 12.5 ms, max 32.4 ms で, モードの違いを捉えられている. そこで条件 4 の例を ripple_shapes の Shard に置き換え, 条件を満たした.
+  2. `--repeat 3` で, 軽いシェーダーは 3 回とも同じ値か幅 4.4%, 77 ms ほどの重いシェーダーは幅 0.3%. 計測の前に GPU を起こすようにする前は, 軽いシェーダーの 1 回目だけが倍近く遅かった (7.4).
+  3. preview で重い 3 本が 1280x720 の max モードで 10 ms から 29 ms と上位に来て, 軽いものは 0.3 ms 前後だった. 3 本の中の順番は preview と違う. preview は WebGL で, Level も録音から与えている.
+  4. 画素ごとの計算量が Level に依らないシェーダーは 3 つのモードで同じ時間だった (Level の値は描画に届いていて, PNG は違う). Level に応じて描く要素を増やすシェーダーは default 0.51 ms, recording 12.5 ms, max 32.4 ms で, モードの違いを捉えられた.
 
 ### M5: 仕上げ
 - README (インストール, 例, 数字の読み方と限界).
-- vjcomponents の Use 済みシェーダーを全部測る例. Use 済みの一覧は vjcomponents の preview サーバーの `GET /__feedback` か `isfs/feedback.jsonl` (ファイル名ごとに最後の `use` / `unuse` / `reject` が効く) から作れる. isftool 本体はこの規則を知らなくてよい.
-- 結果 (2026-11-04). 一覧を作る規則は vjcomponents のものなので, スクリプトは vjcomponents の `tools/bench_used.py` に置き (ユーザーの判断), isftool の README からは vjcomponents の話を外した. スクリプトは `vj_controller.py` の `used_shaders` (ファイル名ごとに最後の判定が効き, フォルダーを移っても追える) で一覧を作り, リポジトリの直下から `isftool bench --from - --recording recordings/vdmx_mic.jsonl` を呼ぶ. 直下から呼ぶのは, パスを毎回同じにして前回と比べられるようにするため. Use 済みの 61 本を 1280x720, `--warmup 10 --frames 30` で 3 モード測って約 2.5 分, 全部成功した. 最も重いのは sine_attractors の max (42.84 ms) で, randomgravities と gravity_flow が続く.
+- 呼び出し元の, 実際に使うシェーダーを全部測る例. 一覧を作る規則は呼び出し元のものなので, isftool 本体はこの規則を知らなくてよい.
+- 結果 (2026-11-04). スクリプトは呼び出し元のリポジトリに置き (ユーザーの判断), isftool の README からは外した. スクリプトはリポジトリの直下から 1 本ずつ `isftool bench` を呼ぶ. 直下から呼ぶのは, パスを毎回同じにして前回と比べられるようにするため. 61 本を 1280x720, `--warmup 10 --frames 30` で 3 モード測って約 2.5 分, 全部成功した. 最も重いものは max で 42.84 ms だった.
 
 ## 10. 未決事項とリスク
 
@@ -526,12 +525,3 @@ isftool/
 - `~/src/github.com/mrRay/ISFMSLKit/ISFMSLKit/ISFMSLScene.mm`: 描画 (テクスチャ, サンプラー, uniform, 頂点データ, flip).
 - `~/src/github.com/mrRay/ISFMSLKit/ISFMSLKit/ISFMSLFuncSignature.mm`: 関数名の付け方, MSL の宣言の解析, unbound の検査.
 - `~/src/github.com/mrRay/ISFMSLKit/ISFMSLKit/ISFMSLTranspilerError.mm`: VDMX と同じエラー文言.
-
-### vjcomponents 内
-
-- `AGENTS.md`: ISF の規約 (Level 入力, 予約語の一覧, 出力の RGB を alpha 0 で 0 にすること).
-- `preview/shader.ts`: IMG_* の書き換えの参照実装 (WebGL 用なので書き換え先は違う).
-- `preview/renderer.ts`: パスと持続バッファの扱いの参照実装.
-- `preview/audio.ts`: 録音の読み込みと直前値保持.
-- `recordings/vdmx_mic.jsonl`: VDMX の Audio Analysis を OSC で記録したもの (約 47 値/秒, 30 秒).
-- `tools/vj_controller.py`: Level 入力を Filter に割り当てる規則.

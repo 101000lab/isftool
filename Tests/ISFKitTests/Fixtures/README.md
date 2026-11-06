@@ -2,10 +2,10 @@
 
 | File | Source |
 |---|---|
-| `line_space.fs` | vjcomponents `isfs/lines/line_space.fs` (current) |
-| `line_space_layout.fs` | vjcomponents `git show d7b859b~1:isfs/lines/line_space.fs`. Uses `layout` as a variable name |
-| `thin_barcode_layout.fs` | vjcomponents `git show 2798e10~1:isfs/lines/thin_barcode.fs`. Uses `layout` as an input name |
-| `super_polygons_vertex.fs` | vjcomponents `git show 5d195dd~1:isfs/depth/super_polygons.fs`. Defines a function named `vertex` |
+| `line_space.fs` | A shader with a persistent buffer that passes in VDMX |
+| `line_space_layout.fs` | An earlier `line_space.fs` that VDMX rejects. Uses `layout` as a variable name |
+| `thin_barcode_layout.fs` | A shader that VDMX rejects. Uses `layout` as an input name |
+| `super_polygons_vertex.fs` | A shader that VDMX rejects. Defines a function named `vertex` |
 | `vdmx_line_space.vert.glsl` | design.md 3.1, copied from VDMX's error screen for `line_space_layout.fs` |
 | `vdmx_line_space.frag.glsl` | design.md 3.2 with the uniform block filled in. VDMX's fragment preamble, the shader body follows it |
 | `orientation.fs` | Written for isftool. Red on the right half, green on the top half, blue from the `Tint` input |
