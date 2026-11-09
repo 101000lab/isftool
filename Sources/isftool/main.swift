@@ -2,7 +2,7 @@ import ArgumentParser
 import Foundation
 import ISFKit
 
-let isftoolVersion = "0.1.0"
+let isftoolVersion = "0.1.1"
 
 struct IsfTool: ParsableCommand {
     static let configuration = CommandConfiguration(
