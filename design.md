@@ -182,7 +182,9 @@ vec4 VVSAMPLER_2DBYNORM(sampler2D inSampler, vec4 inSamplerImgRect, vec2 inSampl
 | `IMG_NORM_PIXEL` / `IMG_THIS_PIXEL` / `IMG_THIS_NORM_PIXEL` / `IMG_SIZE` | `ISFDoc.cpp` の `generateShaderSource` を参照 | ソース. `IMG_THIS_PIXEL` は頂点シェーダー側で座標を計算して渡す |
 
 - 書き換えは ISFGLSLGenerator がするので, isftool は自前で書き換えない.
-- `gl_FragCoord` は `isf_FragCoord` に置き換わるが, 値は `gl_FragCoord` と同じ画素の中心 (x + 0.5, y + 0.5) になる. `isf_FragCoord` は頂点シェーダーの出力で, 頂点 (四隅) では `isf_FragNormCoord * RENDERSIZE` がちょうど 0 か W / H なので `floor` は何もしない. その値が面の中で線形に補間され, 画素の中心で評価される. 半画素のずれは無いので, 描画側で補正しないこと.
+- `gl_FragCoord` は `isf_FragCoord` に置き換わり, 値はほとんどの大きさで `gl_FragCoord` と同じ画素の中心 (x + 0.5, y + 0.5) になる. `isf_FragCoord` は頂点シェーダーの出力で, 頂点 (四隅) で `floor(isf_FragNormCoord * RENDERSIZE)` を計算し, その値が面の中で線形に補間され, 画素の中心で評価される. 半画素のずれは無いので, 描画側で補正しないこと.
+- ただし一部の大きさでは, 右端や上端の頂点で `isf_FragNormCoord * RENDERSIZE` が丸めで W / H をわずかに下回り, `floor` で W - 1 / H - 1 に落ちる. すると補間された値が面の途中から最大 1 小さくなり, `floor(gl_FragCoord.x)` が行のおよそ半分の画素で 1 小さくなる. isftool で 1 から 4096 までを描いて確かめると, 幅は 291 通り (最小 33, 968, 972, 984 など), 高さは 61 通り (115, 230, 899, 1798 など) でずれた. 幅と高さで当たる値が違うのは, 頂点シェーダーの射影行列で y の符号と定数が x と違うため. 1280, 1366, 1440, 1600, 1680, 1920, 2048, 2560, 3840 の幅と, 720, 768, 900, 1050, 1080, 1200, 1440, 2160 の高さはずれない. VDMX の実機では確かめていないが, 同じ頂点シェーダーを同じ Metal で動かすので, 同じことが起きるはずである.
+- 大きさが出力から決まる pass で画素を番号として使う (状態を画素に詰める, 画素から物体を引く) ときは, `gl_FragCoord` の代わりに `floor(isf_FragNormCoord * RENDERSIZE)` を使う. `isf_FragNormCoord` は `floor` を通らずに補間されるので, 画素の中心では x + 0.5 よりごくわずかに小さい値になるだけで, `floor` の結果は変わらない.
 
 ### 3.4 uniform ブロックの並び (検証済み)
 
